@@ -46,4 +46,4 @@ if ! curl -s -o /dev/null --max-time 2 "$URL"; then
     exit 1
 fi
 
-open "$URL"
+exec "$VENV/bin/python3" "$PROJECT_DIR/native_window.py" >> "$LOG" 2>&1

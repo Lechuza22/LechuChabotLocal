@@ -11,12 +11,14 @@ su propio proyecto OAuth en Google Cloud y conexión a internet.
 ## Abrir la app
 
 **Opción rápida:** doble click en `Lechu.app`. Arranca Ollama y el servidor
-si hace falta (o reusa los que ya estén corriendo) y abre el navegador en
-`http://localhost:8501`, sin ventana de Terminal. Podés arrastrarlo a
-`/Applications` o al Dock. La primera vez que lo abras, macOS va a avisar
-que es de un desarrollador no identificado (Gatekeeper) — hacé click derecho
-→ Abrir para confirmar una sola vez. Los logs quedan en
-`data/lechu_launcher.log`.
+si hace falta (o reusa los que ya estén corriendo) y abre una ventana nativa
+de Mac (vía `pywebview`, sin barra de navegador ni ventana de Terminal)
+apuntando al servidor local. Podés arrastrarlo a `/Applications` o al Dock.
+La primera vez que lo abras, macOS va a avisar que es de un desarrollador no
+identificado (Gatekeeper) — hacé click derecho → Abrir para confirmar una
+sola vez. Los logs quedan en `data/lechu_launcher.log`. Cerrar la ventana
+cierra la app, pero el servidor Streamlit/Ollama siguen corriendo en
+segundo plano (así la próxima apertura es instantánea).
 
 **Setup manual / desarrollo:**
 
