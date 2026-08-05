@@ -18,7 +18,7 @@ from core.llm import OllamaClient
 from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
 from core.tools.datetime_tools import get_current_time
-from core.tools.filesystem import read_file, set_active_roots
+from core.tools.filesystem import get_active_roots, read_file, set_active_roots
 from core.tools.memory_tools import set_memory_scope
 
 # mistral has a strong training bias toward claiming it "can't know the real
@@ -201,6 +201,16 @@ def persist_new_messages(conv_id: int, messages: list[dict], start_index: int) -
 def build_system_message(agent: Agent, user_input: str) -> dict:
     matched: list[Skill] = match_skills(user_input, st.session_state.skills)
     text = agent.system_prompt
+
+    roots = get_active_roots()
+    if roots:
+        roots_str = ", ".join(str(r) for r in roots)
+        text += (
+            f"\n\nThe folder you can currently read/write is: {roots_str}. "
+            "When the user refers to \"this folder\"/\"esta carpeta\" or gives no path, "
+            "use exactly this folder."
+        )
+
     time_context = _maybe_time_context(user_input)
     if time_context:
         text += "\n\n" + time_context

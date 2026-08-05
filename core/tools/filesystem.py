@@ -21,6 +21,10 @@ def set_active_roots(folder_path: str | None) -> None:
         _active_roots = list(CONFIG.filesystem.whitelisted_folders)
 
 
+def get_active_roots() -> list[Path]:
+    return list(_active_roots)
+
+
 def _resolve_and_validate(path: str) -> Path:
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
