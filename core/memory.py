@@ -8,11 +8,18 @@ from typing import Iterator
 from config import DB_PATH
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT,
     agent_id TEXT NOT NULL,
     model TEXT NOT NULL,
+    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -59,15 +66,31 @@ def _connect() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+        if "project_id" not in cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN project_id INTEGER REFERENCES projects(id)")
+
+
+# --- projects ------------------------------------------------------------
+
+def create_project(name: str) -> int:
+    with _connect() as conn:
+        cur = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+        return cur.lastrowid
+
+
+def list_projects() -> list[sqlite3.Row]:
+    with _connect() as conn:
+        return conn.execute("SELECT id, name, created_at FROM projects ORDER BY name").fetchall()
 
 
 # --- conversations -----------------------------------------------------
 
-def create_conversation(agent_id: str, model: str, title: str | None = None) -> int:
+def create_conversation(agent_id: str, model: str, project_id: int | None = None, title: str | None = None) -> int:
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO conversations (title, agent_id, model) VALUES (?, ?, ?)",
-            (title, agent_id, model),
+            "INSERT INTO conversations (title, agent_id, model, project_id) VALUES (?, ?, ?, ?)",
+            (title, agent_id, model, project_id),
         )
         return cur.lastrowid
 
@@ -87,11 +110,16 @@ def set_conversation_title(conversation_id: int, title: str) -> None:
         )
 
 
-def list_conversations() -> list[sqlite3.Row]:
+def list_conversations(project_id: int | None = None) -> list[sqlite3.Row]:
     with _connect() as conn:
+        cols = "id, title, agent_id, model, project_id, created_at, updated_at"
+        if project_id is None:
+            return conn.execute(
+                f"SELECT {cols} FROM conversations WHERE project_id IS NULL ORDER BY updated_at DESC"
+            ).fetchall()
         return conn.execute(
-            "SELECT id, title, agent_id, model, created_at, updated_at "
-            "FROM conversations ORDER BY updated_at DESC"
+            f"SELECT {cols} FROM conversations WHERE project_id = ? ORDER BY updated_at DESC",
+            (project_id,),
         ).fetchall()
 
 
@@ -138,6 +166,35 @@ def get_conversation_messages(conversation_id: int) -> list[dict]:
             msg["tool_call_id"] = row["tool_call_id"]
         messages.append(msg)
     return messages
+
+
+def list_project_documents(project_id: int | None, limit: int = 10) -> list[str]:
+    """Unique file paths touched (read/written) in this project's conversations, most recent first."""
+    with _connect() as conn:
+        project_filter = "c.project_id IS NULL" if project_id is None else "c.project_id = ?"
+        params = () if project_id is None else (project_id,)
+        rows = conn.execute(
+            f"""
+            SELECT m.content FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE m.role = 'tool' AND m.tool_name IN ('read_file', 'write_file')
+              AND {project_filter}
+            ORDER BY m.created_at DESC
+            """,
+            params,
+        ).fetchall()
+    seen: list[str] = []
+    for row in rows:
+        try:
+            data = json.loads(row["content"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        path = data.get("path")
+        if path and "error" not in data and path not in seen:
+            seen.append(path)
+        if len(seen) >= limit:
+            break
+    return seen
 
 
 # --- facts -----------------------------------------------------------------

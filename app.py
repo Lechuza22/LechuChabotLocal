@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import csv
 import dataclasses
+import io
 import json
+import sqlite3
+from pathlib import Path
 
 import httpx
 import streamlit as st
@@ -13,6 +17,7 @@ from core.llm import OllamaClient
 from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
 from core.tools.datetime_tools import get_current_time
+from core.tools.filesystem import read_file
 
 # mistral has a strong training bias toward claiming it "can't know the real
 # time", which fights the get_current_time tool call even when instructed
@@ -53,24 +58,32 @@ def get_agents() -> dict[str, Agent]:
 # --- conversation lifecycle -------------------------------------------------
 
 def start_new_conversation(agent: Agent) -> None:
-    conv_id = memory.create_conversation(agent_id=agent.id, model=agent.model)
+    project_id = st.session_state.get("active_project_id")
+    conv_id = memory.create_conversation(agent_id=agent.id, model=agent.model, project_id=project_id)
     memory.add_message(conv_id, "system", agent.system_prompt)
     st.session_state.conversation_id = conv_id
     st.session_state.messages = [{"role": "system", "content": agent.system_prompt}]
     st.session_state.pending_tool_call = None
     st.session_state.title_set = False
+    st.session_state.canvas = None
 
 
 def load_conversation(conv_row, agents: dict[str, Agent]) -> None:
     st.session_state.conversation_id = conv_row["id"]
     st.session_state.agent_id = conv_row["agent_id"] if conv_row["agent_id"] in agents else CONFIG.default_agent
     st.session_state.active_model = conv_row["model"]
+    st.session_state.active_project_id = conv_row["project_id"]
     st.session_state.messages = memory.get_conversation_messages(conv_row["id"])
     st.session_state.pending_tool_call = None
     st.session_state.title_set = True
+    st.session_state.canvas = None
 
 
 def init_session_state(agents: dict[str, Agent]) -> None:
+    if "active_project_id" not in st.session_state:
+        st.session_state.active_project_id = None
+    if "canvas" not in st.session_state:
+        st.session_state.canvas = None
     if "agent_id" not in st.session_state:
         st.session_state.agent_id = CONFIG.default_agent if CONFIG.default_agent in agents else next(iter(agents))
     if "skills" not in st.session_state:
@@ -90,6 +103,32 @@ def _lookup_tool_name(messages: list[dict], tool_call_id: str) -> str | None:
                 if call.get("id") == tool_call_id:
                     return call["function"]["name"]
     return None
+
+
+# --- canvas (document preview panel) -----------------------------------------
+
+def _load_into_canvas(path: str) -> None:
+    try:
+        fresh = read_file(path)
+        st.session_state.canvas = {"path": path, "content": fresh["content"]}
+    except Exception as e:
+        st.session_state.canvas = {"path": path, "error": str(e)}
+
+
+def _scan_for_canvas_update(messages: list[dict], start_index: int) -> None:
+    for msg in messages[start_index:]:
+        if msg.get("role") != "tool":
+            continue
+        tool_name = _lookup_tool_name(messages, msg.get("tool_call_id"))
+        if tool_name not in ("read_file", "write_file"):
+            continue
+        try:
+            result = json.loads(msg["content"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        path = result.get("path")
+        if path and "error" not in result:
+            _load_into_canvas(path)
 
 
 def persist_new_messages(conv_id: int, messages: list[dict], start_index: int) -> None:
@@ -139,6 +178,7 @@ def _advance(client: OllamaClient, agent: Agent, conv_id: int) -> None:
             result = FinalAnswer(fallback)
 
         persist_new_messages(conv_id, st.session_state.messages, start_len)
+        _scan_for_canvas_update(st.session_state.messages, start_len)
         st.session_state.pending_tool_call = (
             result._asdict() if isinstance(result, PendingConfirmation) else None
         )
@@ -184,6 +224,30 @@ def _append_and_persist_tool_result(pc: dict, result: dict) -> None:
 def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
     st.sidebar.title("🦉 Lechu")
 
+    st.sidebar.subheader("Proyectos")
+    projects = memory.list_projects()
+    options = ["Sin proyecto"] + [p["name"] for p in projects]
+    name_to_id = {p["name"]: p["id"] for p in projects}
+    current_name = next(
+        (p["name"] for p in projects if p["id"] == st.session_state.active_project_id),
+        "Sin proyecto",
+    )
+    selected_name = st.sidebar.selectbox("Proyecto activo", options, index=options.index(current_name))
+    selected_project_id = name_to_id.get(selected_name)
+    if selected_project_id != st.session_state.active_project_id:
+        st.session_state.active_project_id = selected_project_id
+        st.rerun()
+
+    with st.sidebar.form("new_project_form", clear_on_submit=True):
+        new_project_name = st.text_input("Nuevo proyecto")
+        if st.form_submit_button("Crear proyecto") and new_project_name.strip():
+            try:
+                new_id = memory.create_project(new_project_name.strip())
+                st.session_state.active_project_id = new_id
+                st.rerun()
+            except sqlite3.IntegrityError:
+                st.sidebar.error(f"Ya existe un proyecto llamado '{new_project_name.strip()}'.")
+
     agent_ids = list(agents.keys())
     selected_id = st.sidebar.selectbox(
         "Agente",
@@ -225,10 +289,10 @@ def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
         start_new_conversation(agent)
         st.rerun()
 
-    with st.sidebar.expander("Historial"):
-        conversations = memory.list_conversations()
+    with st.sidebar.expander("Historial", expanded=True):
+        conversations = memory.list_conversations(st.session_state.active_project_id)
         if not conversations:
-            st.caption("Sin conversaciones todavía.")
+            st.caption("Sin conversaciones todavía en este proyecto.")
         for conv in conversations:
             label = conv["title"] or f"Conversación #{conv['id']} ({conv['agent_id']})"
             if st.button(label, key=f"conv_{conv['id']}"):
@@ -322,6 +386,8 @@ def render_confirmation_card(client: OllamaClient, agent: Agent) -> None:
     if confirm:
         result = execute_tool(pc["tool_name"], pc["args"])
         _append_and_persist_tool_result(pc, result)
+        if pc["tool_name"] in ("read_file", "write_file") and "error" not in result:
+            _load_into_canvas(result["path"])
         st.session_state.pending_tool_call = None
         _advance(client, agent, st.session_state.conversation_id)
         st.rerun()
@@ -332,10 +398,52 @@ def render_confirmation_card(client: OllamaClient, agent: Agent) -> None:
         st.rerun()
 
 
+# --- UI: canvas (document preview panel) --------------------------------------
+
+def render_canvas_panel() -> None:
+    st.subheader("📄 Documentos")
+
+    docs = memory.list_project_documents(st.session_state.active_project_id)
+    if docs:
+        with st.expander("Recientes en este proyecto", expanded=st.session_state.canvas is None):
+            for path in docs:
+                if st.button(Path(path).name, key=f"doc_{path}", use_container_width=True):
+                    _load_into_canvas(path)
+                    st.rerun()
+
+    canvas = st.session_state.canvas
+    if not canvas:
+        st.caption("Acá vas a ver los archivos que Lechu lea o escriba durante la conversación.")
+        return
+
+    st.caption(canvas["path"])
+    if canvas.get("error"):
+        st.error(canvas["error"])
+        return
+
+    content = canvas["content"]
+    ext = Path(canvas["path"]).suffix.lower()
+    if ext in (".csv", ".tsv"):
+        delimiter = "," if ext == ".csv" else "\t"
+        try:
+            rows = list(csv.DictReader(io.StringIO(content), delimiter=delimiter))
+            st.dataframe(rows, use_container_width=True)
+        except csv.Error:
+            st.code(content)
+    elif ext in (".md", ".markdown"):
+        st.markdown(content)
+    else:
+        st.code(content, language=None)
+
+
 # --- main ----------------------------------------------------------------------
 
 def main() -> None:
     st.set_page_config(page_title="Lechu", page_icon="🦉", layout="wide")
+    st.markdown(
+        "<style>[data-testid='stStatusWidget'] {visibility: hidden;}</style>",
+        unsafe_allow_html=True,
+    )
     memory.init_db()
 
     client = get_client()
@@ -347,19 +455,24 @@ def main() -> None:
 
     agent = render_sidebar(agents, client)
 
-    st.title("🦉 Lechu")
-    st.caption(f"Agente: {agent.name} · Modelo: {agent.model} · 100% offline vía Ollama")
+    chat_col, canvas_col = st.columns([3, 2])
 
-    render_chat()
+    with chat_col:
+        st.title("🦉 Lechu")
+        st.caption(f"Agente: {agent.name} · Modelo: {agent.model} · 100% offline vía Ollama")
 
-    if st.session_state.pending_tool_call:
-        render_confirmation_card(client, agent)
-        st.stop()
+        render_chat()
 
-    user_input = st.chat_input("Escribí un mensaje...")
-    if user_input:
-        handle_user_turn(client, agent, user_input)
-        st.rerun()
+        if st.session_state.pending_tool_call:
+            render_confirmation_card(client, agent)
+        else:
+            user_input = st.chat_input("Escribí un mensaje...")
+            if user_input:
+                handle_user_turn(client, agent, user_input)
+                st.rerun()
+
+    with canvas_col:
+        render_canvas_panel()
 
 
 if __name__ == "__main__":
