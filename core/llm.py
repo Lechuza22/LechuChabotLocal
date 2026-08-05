@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Iterator
 
 import httpx
@@ -17,19 +18,16 @@ class OllamaClient:
         resp.raise_for_status()
         return resp.json()["message"]
 
-    def stream(self, model: str, messages: list[dict]) -> Iterator[str]:
+    def chat_stream(self, model: str, messages: list[dict], tools: list[dict] | None = None) -> Iterator[dict]:
         payload = {"model": model, "messages": messages, "stream": True}
+        if tools:
+            payload["tools"] = tools
         with self._client.stream("POST", "/api/chat", json=payload) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
                 if not line:
                     continue
-                import json as _json
-
-                chunk = _json.loads(line)
-                piece = chunk.get("message", {}).get("content", "")
-                if piece:
-                    yield piece
+                yield json.loads(line)
 
     def list_models(self) -> list[str]:
         resp = self._client.get("/api/tags")

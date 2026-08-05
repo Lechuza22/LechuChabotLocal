@@ -11,7 +11,7 @@ from core import memory
 from core.agents import Agent, load_agents
 from core.llm import OllamaClient
 from core.skills import Skill, load_skills, match_skills
-from core.tool_loop import drive_turn, execute_tool
+from core.tool_loop import FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
 from core.tools.datetime_tools import get_current_time
 
 # mistral has a strong training bias toward claiming it "can't know the real
@@ -125,12 +125,23 @@ def build_system_message(agent: Agent, user_input: str) -> dict:
 def _advance(client: OllamaClient, agent: Agent, conv_id: int) -> None:
     start_len = len(st.session_state.messages)
     try:
-        with st.spinner("🦉 Lechu está pensando..."):
-            final_text, pending = drive_turn(
-                client, agent, st.session_state.messages, CONFIG.max_tool_iterations
-            )
+        result = None
+        for _ in range(CONFIG.max_tool_iterations):
+            chunks, box = step_agent_stream(client, agent, st.session_state.messages)
+            with st.chat_message("assistant", avatar="🦉"):
+                st.write_stream(chunks)
+            result = box["result"]
+            if isinstance(result, (FinalAnswer, PendingConfirmation)):
+                break
+        else:
+            fallback = "Me detuve después de demasiadas llamadas a herramientas. Probá simplificar el pedido."
+            st.session_state.messages.append({"role": "assistant", "content": fallback})
+            result = FinalAnswer(fallback)
+
         persist_new_messages(conv_id, st.session_state.messages, start_len)
-        st.session_state.pending_tool_call = pending._asdict() if pending else None
+        st.session_state.pending_tool_call = (
+            result._asdict() if isinstance(result, PendingConfirmation) else None
+        )
     except httpx.HTTPError as e:
         st.session_state.messages.append(
             {"role": "assistant", "content": f"No se pudo contactar a Ollama: {e}"}
@@ -148,6 +159,9 @@ def handle_user_turn(client: OllamaClient, agent: Agent, user_input: str) -> Non
     if not st.session_state.get("title_set"):
         memory.set_conversation_title(conv_id, user_input.strip().splitlines()[0][:60])
         st.session_state.title_set = True
+
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
     _advance(client, agent, conv_id)
 
