@@ -125,9 +125,10 @@ def build_system_message(agent: Agent, user_input: str) -> dict:
 def _advance(client: OllamaClient, agent: Agent, conv_id: int) -> None:
     start_len = len(st.session_state.messages)
     try:
-        final_text, pending = drive_turn(
-            client, agent, st.session_state.messages, CONFIG.max_tool_iterations
-        )
+        with st.spinner("🦉 Lechu está pensando..."):
+            final_text, pending = drive_turn(
+                client, agent, st.session_state.messages, CONFIG.max_tool_iterations
+            )
         persist_new_messages(conv_id, st.session_state.messages, start_len)
         st.session_state.pending_tool_call = pending._asdict() if pending else None
     except httpx.HTTPError as e:
@@ -280,7 +281,7 @@ def render_chat() -> None:
                         "args": call["function"]["arguments"],
                     })
                 continue
-            with st.chat_message("assistant"):
+            with st.chat_message("assistant", avatar="🦉"):
                 if pending_tool_activity:
                     with st.expander("Actividad de herramientas", expanded=False):
                         for item in pending_tool_activity:
@@ -297,7 +298,7 @@ def render_chat() -> None:
 
 def render_confirmation_card(client: OllamaClient, agent: Agent) -> None:
     pc = st.session_state.pending_tool_call
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🦉"):
         st.warning(f"El asistente quiere ejecutar **{pc['tool_name']}** con estos argumentos:")
         st.code(json.dumps(pc["args"], indent=2, ensure_ascii=False), language="json")
         col1, col2 = st.columns(2)
