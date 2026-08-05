@@ -331,16 +331,6 @@ def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
             start_new_conversation(agents[st.session_state.agent_id])
             st.rerun()
 
-    with st.sidebar.form("new_project_form", clear_on_submit=True):
-        new_project_name = st.text_input("Nuevo proyecto (sin carpeta)")
-        if st.form_submit_button("Crear proyecto") and new_project_name.strip():
-            try:
-                new_id = memory.create_project(new_project_name.strip())
-                st.session_state.active_project_id = new_id
-                st.rerun()
-            except sqlite3.IntegrityError:
-                st.sidebar.error(f"Ya existe un proyecto llamado '{new_project_name.strip()}'.")
-
     if active_project_row and active_project_row["folder_path"]:
         st.sidebar.caption(f"📁 {active_project_row['folder_path']}")
         with st.sidebar.expander("Archivos", expanded=True):
