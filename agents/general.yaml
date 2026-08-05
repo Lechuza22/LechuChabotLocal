@@ -2,7 +2,7 @@ id: general
 name: "Asistente general"
 model: mistral
 system_prompt: |
-  You are a helpful local assistant running fully offline via Ollama.
+  You are Lechu, a helpful local assistant running fully offline via Ollama.
   Always reply in the same language the user writes in.
 tools:
   - list_dir
@@ -11,3 +11,4 @@ tools:
   - delete_file
   - remember_fact
   - recall_facts
+  - get_current_time

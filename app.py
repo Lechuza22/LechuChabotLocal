@@ -12,6 +12,32 @@ from core.agents import Agent, load_agents
 from core.llm import OllamaClient
 from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import drive_turn, execute_tool
+from core.tools.datetime_tools import get_current_time
+
+# mistral has a strong training bias toward claiming it "can't know the real
+# time", which fights the get_current_time tool call even when instructed
+# (empirically ~15-30% success). For this narrow, unambiguous, read-only
+# query we skip relying on tool-calling and inject the real system clock
+# straight into the system prompt instead - same keyword-injection mechanism
+# as skills, just backed by live data instead of a markdown file.
+_TIME_KEYWORDS = (
+    "qué hora", "que hora", "hora es", "hora actual",
+    "qué día es", "que dia es", "fecha de hoy", "fecha actual",
+    "what time", "current time", "time is it",
+    "today's date", "current date", "what's the date", "what is the date",
+)
+
+
+def _maybe_time_context(user_input: str) -> str | None:
+    q = user_input.lower()
+    if not any(kw in q for kw in _TIME_KEYWORDS):
+        return None
+    info = get_current_time()
+    return (
+        f"The user's local system time right now is {info['time']} on {info['date']} "
+        f"({info['weekday']}). If asked about the current time or date, answer naturally "
+        f"using this real value instead of saying you don't have access to it."
+    )
 
 
 @st.cache_resource
@@ -84,6 +110,9 @@ def persist_new_messages(conv_id: int, messages: list[dict], start_index: int) -
 def build_system_message(agent: Agent, user_input: str) -> dict:
     matched: list[Skill] = match_skills(user_input, st.session_state.skills)
     text = agent.system_prompt
+    time_context = _maybe_time_context(user_input)
+    if time_context:
+        text += "\n\n" + time_context
     if matched:
         text += "\n\n# Relevant skill instructions:\n" + "\n\n".join(
             f"## {s.name}\n{s.body}" for s in matched
@@ -138,7 +167,7 @@ def _append_and_persist_tool_result(pc: dict, result: dict) -> None:
 # --- UI: sidebar -------------------------------------------------------------
 
 def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
-    st.sidebar.title("Chatbot local")
+    st.sidebar.title("🦉 Lechu")
 
     agent_ids = list(agents.keys())
     selected_id = st.sidebar.selectbox(
@@ -291,7 +320,7 @@ def render_confirmation_card(client: OllamaClient, agent: Agent) -> None:
 # --- main ----------------------------------------------------------------------
 
 def main() -> None:
-    st.set_page_config(page_title="Chatbot local", page_icon="🤖", layout="wide")
+    st.set_page_config(page_title="Lechu", page_icon="🦉", layout="wide")
     memory.init_db()
 
     client = get_client()
@@ -303,7 +332,7 @@ def main() -> None:
 
     agent = render_sidebar(agents, client)
 
-    st.title("🤖 Chatbot local")
+    st.title("🦉 Lechu")
     st.caption(f"Agente: {agent.name} · Modelo: {agent.model} · 100% offline vía Ollama")
 
     render_chat()

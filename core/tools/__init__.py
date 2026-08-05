@@ -36,3 +36,4 @@ def register(tool: Tool) -> Tool:
 # bottom so `Tool`/`register` already exist when those modules import them.
 from core.tools import filesystem as _filesystem  # noqa: E402,F401
 from core.tools import memory_tools as _memory_tools  # noqa: E402,F401
+from core.tools import datetime_tools as _datetime_tools  # noqa: E402,F401

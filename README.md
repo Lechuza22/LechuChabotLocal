@@ -1,4 +1,4 @@
-# Chatbot local (Ollama + Streamlit)
+# Lechu 🦉 (Ollama + Streamlit)
 
 Chatbot 100% offline: interfaz Streamlit, inferencia con Ollama local,
 memoria persistente en SQLite, acceso a carpetas whitelisteadas, agentes con
