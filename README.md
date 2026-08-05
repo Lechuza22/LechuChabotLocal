@@ -8,7 +8,17 @@ Fase 1 (esta versión): chat + memoria + filesystem + agentes/tools + skills.
 Fase 2 (futura): integraciones con Google Drive/Gmail/Calendar — requieren
 su propio proyecto OAuth en Google Cloud y conexión a internet.
 
-## Setup
+## Abrir la app
+
+**Opción rápida:** doble click en `Lechu.app`. Arranca Ollama y el servidor
+si hace falta (o reusa los que ya estén corriendo) y abre el navegador en
+`http://localhost:8501`, sin ventana de Terminal. Podés arrastrarlo a
+`/Applications` o al Dock. La primera vez que lo abras, macOS va a avisar
+que es de un desarrollador no identificado (Gatekeeper) — hacé click derecho
+→ Abrir para confirmar una sola vez. Los logs quedan en
+`data/lechu_launcher.log`.
+
+**Setup manual / desarrollo:**
 
 ```bash
 ollama serve  # si no está corriendo ya

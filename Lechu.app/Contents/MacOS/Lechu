@@ -1,0 +1,49 @@
+#!/bin/bash
+set -uo pipefail
+
+PROJECT_DIR="/Users/lechu/Projects/Chatbot"
+VENV="$PROJECT_DIR/.venv"
+PORT=8501
+URL="http://localhost:$PORT"
+LOG="$PROJECT_DIR/data/lechu_launcher.log"
+
+mkdir -p "$PROJECT_DIR/data"
+echo "--- $(date) ---" >> "$LOG"
+
+notify_error() {
+    osascript -e "display dialog \"$1\" with title \"Lechu\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1
+}
+
+# 1. Make sure Ollama is running
+if ! curl -s -o /dev/null --max-time 2 http://localhost:11434/api/version; then
+    if ! command -v ollama >/dev/null 2>&1; then
+        notify_error "No encuentro el comando 'ollama'. Instalalo desde https://ollama.com antes de abrir Lechu."
+        exit 1
+    fi
+    nohup ollama serve >> "$LOG" 2>&1 &
+    for _ in $(seq 1 15); do
+        curl -s -o /dev/null --max-time 1 http://localhost:11434/api/version && break
+        sleep 1
+    done
+fi
+
+# 2. Make sure the Streamlit server is running (skip if already up)
+if ! curl -s -o /dev/null --max-time 2 "$URL"; then
+    if [ ! -x "$VENV/bin/streamlit" ]; then
+        notify_error "No encuentro el entorno virtual del proyecto en $VENV. Corré el setup de README.md primero."
+        exit 1
+    fi
+    cd "$PROJECT_DIR" || exit 1
+    nohup "$VENV/bin/streamlit" run app.py --server.headless true --server.port "$PORT" >> "$LOG" 2>&1 &
+    for _ in $(seq 1 30); do
+        curl -s -o /dev/null --max-time 1 "$URL" && break
+        sleep 1
+    done
+fi
+
+if ! curl -s -o /dev/null --max-time 2 "$URL"; then
+    notify_error "Lechu no arrancó a tiempo. Revisá el log en $LOG."
+    exit 1
+fi
+
+open "$URL"

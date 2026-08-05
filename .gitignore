@@ -2,4 +2,5 @@
 __pycache__/
 *.pyc
 data/memory.db
+data/lechu_launcher.log
 .DS_Store
