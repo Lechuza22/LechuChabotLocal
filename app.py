@@ -118,6 +118,7 @@ def start_new_conversation(agent: Agent) -> None:
     st.session_state.pending_tool_call = None
     st.session_state.title_set = False
     st.session_state.canvas = None
+    st.session_state.expanded_dirs = set()
 
 
 def load_conversation(conv_row, agents: dict[str, Agent]) -> None:
@@ -129,6 +130,7 @@ def load_conversation(conv_row, agents: dict[str, Agent]) -> None:
     st.session_state.pending_tool_call = None
     st.session_state.title_set = True
     st.session_state.canvas = None
+    st.session_state.expanded_dirs = set()
 
 
 def init_session_state(agents: dict[str, Agent]) -> None:
@@ -136,6 +138,8 @@ def init_session_state(agents: dict[str, Agent]) -> None:
         st.session_state.active_project_id = None
     if "canvas" not in st.session_state:
         st.session_state.canvas = None
+    if "expanded_dirs" not in st.session_state:
+        st.session_state.expanded_dirs = set()
     if "agent_id" not in st.session_state:
         st.session_state.agent_id = CONFIG.default_agent if CONFIG.default_agent in agents else next(iter(agents))
     if "skills" not in st.session_state:
@@ -281,28 +285,89 @@ def _append_and_persist_tool_result(pc: dict, result: dict) -> None:
     )
 
 
-# --- UI: sidebar -------------------------------------------------------------
+# --- UI: file explorer column -------------------------------------------------
 
-def render_file_tree(folder: Path, depth: int = 0, max_entries: int = 300) -> None:
-    if depth > 6:
+_TREE_CSS = """
+<style>
+div[class*="st-key-lechu_tree"] button {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    text-align: left;
+    justify-content: flex-start;
+    padding: 2px 6px;
+    font-size: 0.85rem;
+    font-weight: 400;
+    min-height: 1.6rem;
+    border-radius: 4px;
+}
+div[class*="st-key-lechu_tree"] button:hover {
+    background: rgba(165, 105, 58, 0.12);
+    color: inherit;
+}
+div[class*="st-key-lechu_tree"] div[data-testid="stHorizontalBlock"] {
+    gap: 0rem;
+    align-items: center;
+}
+</style>
+"""
+
+
+def render_file_tree_node(path: Path, depth: int = 0, max_entries: int = 300) -> None:
+    if depth > 8:
         return
     try:
-        entries = sorted(folder.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
     except OSError as e:
-        st.caption(f"No se pudo leer {folder.name}: {e}")
+        st.caption(f"No se pudo leer {path.name}: {e}")
         return
     entries = [e for e in entries if not e.name.startswith(".")][:max_entries]
+
     for entry in entries:
-        if entry.is_dir():
-            with st.expander(f"📁 {entry.name}", expanded=False):
-                render_file_tree(entry, depth + 1, max_entries)
+        if depth > 0:
+            _, row = st.columns([depth * 0.5, 6])
         else:
-            if st.button(f"📄 {entry.name}", key=f"tree_{entry}", use_container_width=True):
-                _load_into_canvas(str(entry))
-                st.rerun()
+            row = st.container()
+
+        is_dir = entry.is_dir()
+        with row:
+            if is_dir:
+                is_open = str(entry) in st.session_state.expanded_dirs
+                icon = "📂" if is_open else "📁"
+                clicked = st.button(f"{icon} {entry.name}", key=f"tree_{entry}", use_container_width=True)
+            else:
+                clicked = st.button(f"📄 {entry.name}", key=f"tree_{entry}", use_container_width=True)
+
+        if is_dir and clicked:
+            if str(entry) in st.session_state.expanded_dirs:
+                st.session_state.expanded_dirs.discard(str(entry))
+            else:
+                st.session_state.expanded_dirs.add(str(entry))
+            st.rerun()
+        elif not is_dir and clicked:
+            _load_into_canvas(str(entry))
+            st.rerun()
+
+        if is_dir and str(entry) in st.session_state.expanded_dirs:
+            render_file_tree_node(entry, depth + 1, max_entries)
 
 
-def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
+def render_explorer_column(active_project_row) -> None:
+    st.markdown(_TREE_CSS, unsafe_allow_html=True)
+    st.subheader("🗂️ Explorer")
+    if not (active_project_row and active_project_row["folder_path"]):
+        st.caption("Abrí una carpeta desde la sidebar para ver sus archivos acá.")
+        return
+    folder = Path(active_project_row["folder_path"])
+    st.caption(folder.name)
+    with st.container(key="lechu_tree"):
+        render_file_tree_node(folder)
+
+
+# --- UI: sidebar -------------------------------------------------------------
+
+
+def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> tuple[Agent, sqlite3.Row | None]:
     st.sidebar.title("🦉 Lechu")
 
     st.sidebar.subheader("Proyectos")
@@ -333,8 +398,6 @@ def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
 
     if active_project_row and active_project_row["folder_path"]:
         st.sidebar.caption(f"📁 {active_project_row['folder_path']}")
-        with st.sidebar.expander("Archivos", expanded=True):
-            render_file_tree(Path(active_project_row["folder_path"]))
 
     agent_ids = list(agents.keys())
     selected_id = st.sidebar.selectbox(
@@ -423,7 +486,7 @@ def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
         for folder in CONFIG.filesystem.whitelisted_folders:
             st.code(str(folder))
 
-    return dataclasses.replace(agent, model=selected_model)
+    return dataclasses.replace(agent, model=selected_model), active_project_row
 
 
 # --- UI: chat -----------------------------------------------------------------
@@ -541,9 +604,12 @@ def main() -> None:
         st.stop()
     init_session_state(agents)
 
-    agent = render_sidebar(agents, client)
+    agent, active_project_row = render_sidebar(agents, client)
 
-    chat_col, canvas_col = st.columns([3, 2])
+    tree_col, chat_col, canvas_col = st.columns([1.2, 3, 2])
+
+    with tree_col:
+        render_explorer_column(active_project_row)
 
     with chat_col:
         st.title("🦉 Lechu")
