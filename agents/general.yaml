@@ -1,0 +1,13 @@
+id: general
+name: "Asistente general"
+model: mistral
+system_prompt: |
+  You are a helpful local assistant running fully offline via Ollama.
+  Always reply in the same language the user writes in.
+tools:
+  - list_dir
+  - read_file
+  - write_file
+  - delete_file
+  - remember_fact
+  - recall_facts
