@@ -11,6 +11,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
+    folder_path TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -66,22 +67,44 @@ def _connect() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(SCHEMA)
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
-        if "project_id" not in cols:
+        conv_cols = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+        if "project_id" not in conv_cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN project_id INTEGER REFERENCES projects(id)")
+        project_cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+        if "folder_path" not in project_cols:
+            conn.execute("ALTER TABLE projects ADD COLUMN folder_path TEXT")
 
 
 # --- projects ------------------------------------------------------------
 
-def create_project(name: str) -> int:
+def create_project(name: str, folder_path: str | None = None) -> int:
     with _connect() as conn:
-        cur = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+        cur = conn.execute(
+            "INSERT INTO projects (name, folder_path) VALUES (?, ?)", (name, folder_path)
+        )
         return cur.lastrowid
 
 
 def list_projects() -> list[sqlite3.Row]:
     with _connect() as conn:
-        return conn.execute("SELECT id, name, created_at FROM projects ORDER BY name").fetchall()
+        return conn.execute(
+            "SELECT id, name, folder_path, created_at FROM projects ORDER BY name"
+        ).fetchall()
+
+
+def find_project_by_folder(folder_path: str) -> sqlite3.Row | None:
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT id, name, folder_path, created_at FROM projects WHERE folder_path = ?",
+            (folder_path,),
+        ).fetchone()
+
+
+def get_project(project_id: int) -> sqlite3.Row | None:
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT id, name, folder_path, created_at FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
 
 
 # --- conversations -----------------------------------------------------

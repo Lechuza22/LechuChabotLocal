@@ -1,17 +1,37 @@
 from __future__ import annotations
 
-from core import memory
+from pathlib import Path
+
+from core import memory, projects
 from core.tools import Tool, register
+
+# Facts default to the global SQLite store, but a folder-backed project
+# (opened via "Abrir carpeta...") scopes them to that folder's .lechu/facts.json
+# instead - see set_memory_scope().
+_active_project_folder: Path | None = None
+
+
+def set_memory_scope(folder_path: str | None) -> None:
+    global _active_project_folder
+    _active_project_folder = Path(folder_path) if folder_path else None
 
 
 def remember_fact(category: str, key: str, value: str) -> dict:
-    memory.remember_fact(category=category, key=key, value=value, source="agent_inferred")
+    if _active_project_folder:
+        projects.remember_fact_in_folder(_active_project_folder, category, key, value, source="agent_inferred")
+    else:
+        memory.remember_fact(category=category, key=key, value=value, source="agent_inferred")
     return {"remembered": {"category": category, "key": key, "value": value}}
 
 
 def recall_facts(category: str | None = None) -> dict:
-    rows = memory.recall_facts(category=category)
-    return {"facts": [{"category": r["category"], "key": r["key"], "value": r["value"]} for r in rows]}
+    if _active_project_folder:
+        rows = projects.recall_facts_in_folder(_active_project_folder, category)
+        facts = [{"category": r["category"], "key": r["key"], "value": r["value"]} for r in rows]
+    else:
+        rows = memory.recall_facts(category=category)
+        facts = [{"category": r["category"], "key": r["key"], "value": r["value"]} for r in rows]
+    return {"facts": facts}
 
 
 register(Tool(

@@ -5,8 +5,20 @@ from pathlib import Path
 from config import CONFIG
 from core.tools import Tool, register
 
-WHITELISTED_ROOTS = CONFIG.filesystem.whitelisted_folders
 MAX_FILE_SIZE = CONFIG.filesystem.max_file_size_bytes
+
+# The whitelist defaults to the global sandbox folder(s) from config.yaml, but
+# a folder-backed project (opened via "Abrir carpeta...") replaces it for the
+# duration of that project being active - see set_active_roots().
+_active_roots: list[Path] = list(CONFIG.filesystem.whitelisted_folders)
+
+
+def set_active_roots(folder_path: str | None) -> None:
+    global _active_roots
+    if folder_path:
+        _active_roots = [Path(folder_path).expanduser().resolve(strict=False)]
+    else:
+        _active_roots = list(CONFIG.filesystem.whitelisted_folders)
 
 
 def _resolve_and_validate(path: str) -> Path:
@@ -14,14 +26,14 @@ def _resolve_and_validate(path: str) -> Path:
     if not candidate.is_absolute():
         raise ValueError(f"Path must be absolute, got '{path}'")
     resolved = candidate.resolve(strict=False)
-    for root in WHITELISTED_ROOTS:
+    for root in _active_roots:
         try:
             resolved.relative_to(root)
             return resolved
         except ValueError:
             continue
     raise PermissionError(
-        f"'{path}' is outside the whitelisted folders: {[str(r) for r in WHITELISTED_ROOTS]}"
+        f"'{path}' is outside the whitelisted folders: {[str(r) for r in _active_roots]}"
     )
 
 

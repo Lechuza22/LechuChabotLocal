@@ -5,19 +5,21 @@ import dataclasses
 import io
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import httpx
 import streamlit as st
 
 from config import AGENTS_DIR, CONFIG, SKILLS_DIR
-from core import memory
+from core import memory, projects
 from core.agents import Agent, load_agents
 from core.llm import OllamaClient
 from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
 from core.tools.datetime_tools import get_current_time
-from core.tools.filesystem import read_file
+from core.tools.filesystem import read_file, set_active_roots
+from core.tools.memory_tools import set_memory_scope
 
 # mistral has a strong training bias toward claiming it "can't know the real
 # time", which fights the get_current_time tool call even when instructed
@@ -53,6 +55,56 @@ def get_client() -> OllamaClient:
 @st.cache_resource
 def get_agents() -> dict[str, Agent]:
     return load_agents(AGENTS_DIR)
+
+
+# --- folder-backed projects ---------------------------------------------------
+
+def pick_folder_native() -> str | None:
+    """Native macOS folder picker via AppleScript. Returns None on cancel/error."""
+    script = 'POSIX path of (choose folder with prompt "Elegí una carpeta para abrir en Lechu")'
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=120
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None  # user cancelled, or automation permission denied
+    path = result.stdout.strip()
+    return path or None
+
+
+def open_folder_as_project(path: str) -> int:
+    """Links an existing .lechu-marked folder to its project, or registers a new one."""
+    folder = Path(path).expanduser().resolve(strict=False)
+    marker = projects.read_marker(folder)
+    if marker:
+        existing = memory.get_project(marker.get("lechu_project_id", -1))
+        if existing:
+            return existing["id"]
+    by_folder = memory.find_project_by_folder(str(folder))
+    if by_folder:
+        projects.write_marker(folder, by_folder["name"], by_folder["id"])
+        return by_folder["id"]
+
+    name = folder.name or str(folder)
+    candidate = name
+    suffix = 2
+    while True:
+        try:
+            project_id = memory.create_project(candidate, folder_path=str(folder))
+            break
+        except sqlite3.IntegrityError:
+            candidate = f"{name} ({suffix})"
+            suffix += 1
+    projects.write_marker(folder, candidate, project_id)
+    return project_id
+
+
+def sync_project_scope(project_row) -> None:
+    folder_path = project_row["folder_path"] if project_row else None
+    set_active_roots(folder_path)
+    set_memory_scope(folder_path)
 
 
 # --- conversation lifecycle -------------------------------------------------
@@ -221,25 +273,56 @@ def _append_and_persist_tool_result(pc: dict, result: dict) -> None:
 
 # --- UI: sidebar -------------------------------------------------------------
 
+def render_file_tree(folder: Path, depth: int = 0, max_entries: int = 300) -> None:
+    if depth > 6:
+        return
+    try:
+        entries = sorted(folder.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except OSError as e:
+        st.caption(f"No se pudo leer {folder.name}: {e}")
+        return
+    entries = [e for e in entries if not e.name.startswith(".")][:max_entries]
+    for entry in entries:
+        if entry.is_dir():
+            with st.expander(f"📁 {entry.name}", expanded=False):
+                render_file_tree(entry, depth + 1, max_entries)
+        else:
+            if st.button(f"📄 {entry.name}", key=f"tree_{entry}", use_container_width=True):
+                _load_into_canvas(str(entry))
+                st.rerun()
+
+
 def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
     st.sidebar.title("🦉 Lechu")
 
     st.sidebar.subheader("Proyectos")
-    projects = memory.list_projects()
-    options = ["Sin proyecto"] + [p["name"] for p in projects]
-    name_to_id = {p["name"]: p["id"] for p in projects}
+    project_rows = memory.list_projects()
+    options = ["Sin proyecto"] + [p["name"] for p in project_rows]
+    name_to_id = {p["name"]: p["id"] for p in project_rows}
     current_name = next(
-        (p["name"] for p in projects if p["id"] == st.session_state.active_project_id),
+        (p["name"] for p in project_rows if p["id"] == st.session_state.active_project_id),
         "Sin proyecto",
     )
     selected_name = st.sidebar.selectbox("Proyecto activo", options, index=options.index(current_name))
     selected_project_id = name_to_id.get(selected_name)
     if selected_project_id != st.session_state.active_project_id:
         st.session_state.active_project_id = selected_project_id
+        start_new_conversation(agents[st.session_state.agent_id])
         st.rerun()
 
+    active_project_row = next((p for p in project_rows if p["id"] == st.session_state.active_project_id), None)
+    sync_project_scope(active_project_row)
+
+    if st.sidebar.button("📂 Abrir carpeta...", use_container_width=True):
+        picked = pick_folder_native()
+        if picked:
+            new_id = open_folder_as_project(picked)
+            st.session_state.active_project_id = new_id
+            start_new_conversation(agents[st.session_state.agent_id])
+            st.rerun()
+
     with st.sidebar.form("new_project_form", clear_on_submit=True):
-        new_project_name = st.text_input("Nuevo proyecto")
+        new_project_name = st.text_input("Nuevo proyecto (sin carpeta)")
         if st.form_submit_button("Crear proyecto") and new_project_name.strip():
             try:
                 new_id = memory.create_project(new_project_name.strip())
@@ -247,6 +330,11 @@ def render_sidebar(agents: dict[str, Agent], client: OllamaClient) -> Agent:
                 st.rerun()
             except sqlite3.IntegrityError:
                 st.sidebar.error(f"Ya existe un proyecto llamado '{new_project_name.strip()}'.")
+
+    if active_project_row and active_project_row["folder_path"]:
+        st.sidebar.caption(f"📁 {active_project_row['folder_path']}")
+        with st.sidebar.expander("Archivos", expanded=True):
+            render_file_tree(Path(active_project_row["folder_path"]))
 
     agent_ids = list(agents.keys())
     selected_id = st.sidebar.selectbox(
