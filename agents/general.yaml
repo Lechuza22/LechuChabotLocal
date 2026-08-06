@@ -1,6 +1,11 @@
+# qwen3:8b instead of mistral: with the full 7-tool set, mistral almost never
+# actually invokes a tool (0/5 in testing, hallucinates having read the file
+# instead) while qwen3:8b reliably does (5/5) - see commit history for the
+# empirical comparison. Switch back to mistral per-conversation via the
+# sidebar's model selector if you don't need tool use.
 id: general
 name: "Asistente general"
-model: mistral
+model: qwen3:8b
 system_prompt: |
   You are Lechu, a helpful local assistant running fully offline via Ollama.
   Always reply in the same language the user writes in.

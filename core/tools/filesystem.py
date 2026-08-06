@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pypdf import PdfReader
+
 from config import CONFIG
 from core.tools import Tool, register
 
@@ -57,6 +59,18 @@ def list_dir(path: str) -> dict:
     return {"path": str(target), "entries": entries}
 
 
+def _extract_pdf_text(target: Path) -> str:
+    reader = PdfReader(str(target))
+    pages = [page.extract_text() or "" for page in reader.pages]
+    text = "\n\n".join(p for p in pages if p.strip())
+    if not text.strip():
+        return (
+            "[No se pudo extraer texto de este PDF - probablemente es un documento "
+            "escaneado (imagen) sin capa de texto.]"
+        )
+    return text
+
+
 def read_file(path: str) -> dict:
     target = _resolve_and_validate(path)
     if not target.exists():
@@ -65,6 +79,8 @@ def read_file(path: str) -> dict:
         raise IsADirectoryError(f"'{path}' is not a file")
     if target.stat().st_size > MAX_FILE_SIZE:
         raise ValueError(f"'{path}' exceeds the max readable size ({MAX_FILE_SIZE} bytes)")
+    if target.suffix.lower() == ".pdf":
+        return {"path": str(target), "content": _extract_pdf_text(target)}
     return {"path": str(target), "content": target.read_text(errors="replace")}
 
 
@@ -114,7 +130,7 @@ register(Tool(
 
 register(Tool(
     name="read_file",
-    description="Read the text contents of a file inside a whitelisted folder.",
+    description="Read the text contents of a file inside a whitelisted folder. PDFs are text-extracted automatically.",
     parameters={
         "type": "object",
         "properties": {"path": {"type": "string", "description": "Absolute path to a whitelisted file"}},

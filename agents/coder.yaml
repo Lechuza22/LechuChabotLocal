@@ -1,10 +1,11 @@
 # NOTE: qwen2.5-coder:7b does not reliably emit Ollama's structured tool_calls
 # via this Ollama build - it prints the call as JSON text instead, so tools
-# silently never execute. Using mistral here until a verified tool-calling
-# code model is available locally.
+# silently never execute. mistral had the same multi-tool reliability problem
+# documented in general.yaml, so this uses qwen3:8b too until a verified
+# tool-calling code model is available locally.
 id: coder
 name: "Asistente de código"
-model: mistral
+model: qwen3:8b
 system_prompt: |
   You are Lechu, a helpful local coding assistant running fully offline via
   Ollama. Always reply in the same language the user writes in. Briefly
