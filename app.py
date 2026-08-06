@@ -14,6 +14,7 @@ from typing import AsyncIterator, Optional
 import httpx
 import webview
 from nicegui import app, run, ui
+from openpyxl import load_workbook
 
 # ui.chat_message's `avatar` expects an image URL, not raw text - a bare "🦉"
 # renders as a broken-image placeholder. Encode it as an inline SVG data URI instead.
@@ -61,6 +62,7 @@ _MIME_BY_EXT = {
 }
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _PDF_EXTS = {".pdf"}
+_EXCEL_EXTS = {".xlsx", ".xlsm"}
 
 
 def _maybe_time_context(user_input: str) -> str | None:
@@ -258,6 +260,21 @@ def build_system_message(agent: Agent, user_input: str, skills: list[Skill]) -> 
 
 # --- canvas (document preview panel) -----------------------------------------
 
+def _parse_excel(raw: bytes) -> list[dict]:
+    wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    sheet = wb.active
+    rows_iter = sheet.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        return []
+    header = [str(h) if h is not None else f"col{i}" for i, h in enumerate(header_row)]
+    rows = []
+    for row in rows_iter:
+        rows.append({header[i]: row[i] if i < len(row) else None for i in range(len(header))})
+    return rows
+
+
 def _load_into_canvas(state: AppState, path: str) -> None:
     ext = Path(path).suffix.lower()
     try:
@@ -267,6 +284,9 @@ def _load_into_canvas(state: AppState, path: str) -> None:
             data_uri = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
             kind = "pdf" if ext in _PDF_EXTS else "image"
             state.canvas = {"path": path, "kind": kind, "data_uri": data_uri}
+        elif ext in _EXCEL_EXTS:
+            raw = read_file_bytes(path)
+            state.canvas = {"path": path, "kind": "excel", "rows": _parse_excel(raw)}
         else:
             fresh = read_file(path)
             state.canvas = {"path": path, "kind": "text", "content": fresh["content"]}
@@ -323,10 +343,21 @@ def render_canvas(state: AppState, refs: UIRefs) -> None:
         if kind == "image":
             ui.image(canvas["data_uri"]).classes("w-full")
         elif kind == "pdf":
+            # sanitize=False: ui.html defaults to client-side DOMPurify sanitization,
+            # which silently strips <embed> (not in its allowed-tags list) - the
+            # data URI is our own base64 of a file we just read, not user input.
             ui.html(
                 f'<embed src="{canvas["data_uri"]}" type="application/pdf" '
-                'style="width:100%; height:calc(100vh - 220px); border:none;" />'
+                'style="width:100%; height:calc(100vh - 220px); border:none;" />',
+                sanitize=False,
             )
+        elif kind == "excel":
+            rows = canvas["rows"]
+            if rows:
+                columns = [{"name": k, "label": k, "field": k} for k in rows[0].keys()]
+                ui.table(rows=rows, columns=columns, row_key=list(rows[0].keys())[0]).classes("w-full")
+            else:
+                ui.label("(Excel vacío)")
         else:
             content = canvas["content"]
             ext = Path(canvas["path"]).suffix.lower()
@@ -364,7 +395,7 @@ def _icon_for_entry(entry: Path) -> tuple[str, str]:
         return "picture_as_pdf", "red-6"
     if ext in (".md", ".markdown"):
         return "article", "blue-grey-6"
-    if ext in (".csv", ".tsv"):
+    if ext in (".csv", ".tsv") or ext in _EXCEL_EXTS:
         return "table_chart", "green-6"
     if ext in _LANG_BY_EXT:
         return "code", "teal-6"
@@ -420,7 +451,7 @@ def _on_tree_select(state: AppState, refs: UIRefs, node_id: str | None) -> None:
     if not node_id:
         return
     if Path(node_id).is_file():
-        asyncio.create_task(_open_recent_doc(state, refs.canvas_container, node_id))
+        asyncio.create_task(_open_recent_doc(state, refs, node_id))
 
 
 # --- chat rendering -----------------------------------------------------------
