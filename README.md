@@ -1,14 +1,16 @@
 # Lechu 🦉 (Ollama + NiceGUI)
 
-Chatbot 100% offline: interfaz nativa de escritorio (NiceGUI), inferencia
+Chatbot local-first: interfaz nativa de escritorio (NiceGUI), inferencia
 async con Ollama local, memoria persistente en SQLite, proyectos con carpeta
 real + explorer tipo VS Code, agentes con roles/tools específicas y skills
 en Markdown para automatizar tareas.
 
-Fase 1 (esta versión): chat + memoria + filesystem + agentes/tools + skills
-+ proyectos con carpeta real. Fase 2 (futura): integraciones con Google
-Drive/Gmail/Calendar — requieren su propio proyecto OAuth en Google Cloud y
-conexión a internet.
+![Explorer y preview de documentos](assets/screenshots/explorer-y-documentos.png)
+
+Base (offline): chat + memoria + filesystem + agentes/tools + skills +
+proyectos con carpeta real. Conexiones (requieren internet, opcionales -
+ver "Conexiones" abajo): Clima, Maps, y Gmail/Drive/Calendar vía OAuth de
+Google.
 
 ## Abrir la app
 
@@ -66,6 +68,25 @@ Se recarga reiniciando la app.
 
 Ver [skills/README.md](skills/README.md). Las skills se recargan en caliente
 con el botón "Recargar skills" en la sidebar, sin reiniciar la app.
+
+## Conexiones (Configuración → Conexiones)
+
+Todas son opcionales y requieren internet; sin configurarlas, el resto de
+la app sigue siendo 100% offline. Las credenciales nunca se guardan en
+archivos del proyecto — van al Keychain de macOS vía `core/secrets.py`.
+
+- **Clima**: [Open-Meteo](https://open-meteo.com), gratis y sin API key,
+  no requiere ninguna configuración.
+- **Maps**: [OpenRouteService](https://openrouteservice.org), gratis, pedí
+  una API key ahí y pegala en Configuración → Conexiones → Maps. Se eligió
+  por sobre Google Maps para no depender de una cuenta de billing.
+- **Google (Gmail + Drive + Calendar)**: requiere un proyecto propio en
+  [Google Cloud Console](https://console.cloud.google.com) con las APIs de
+  Gmail/Drive/Calendar habilitadas y una credencial OAuth tipo "App de
+  escritorio" (pantalla de consentimiento en modo Testing alcanza para uso
+  personal, no hace falta publicar la app). Pegá el Client ID/Secret en
+  Configuración → Conexiones → Google y apretá "Conectar con Google" — abre
+  el navegador para el login real, el token queda en el Keychain.
 
 ## Agregar una tool nueva
 
