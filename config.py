@@ -45,3 +45,24 @@ AGENTS_DIR = PROJECT_ROOT / "agents"
 SKILLS_DIR = PROJECT_ROOT / "skills"
 DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "memory.db"
+
+
+def _persist_whitelist() -> None:
+    raw = yaml.safe_load(CONFIG_PATH.read_text())
+    raw["filesystem"]["whitelisted_folders"] = [str(p) for p in CONFIG.filesystem.whitelisted_folders]
+    CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
+
+
+def add_whitelisted_folder(path: str) -> None:
+    folder = Path(path).expanduser().resolve(strict=False)
+    folder.mkdir(parents=True, exist_ok=True)
+    if folder not in CONFIG.filesystem.whitelisted_folders:
+        CONFIG.filesystem.whitelisted_folders.append(folder)
+        _persist_whitelist()
+
+
+def remove_whitelisted_folder(path: str) -> None:
+    folder = Path(path).expanduser().resolve(strict=False)
+    if folder in CONFIG.filesystem.whitelisted_folders:
+        CONFIG.filesystem.whitelisted_folders.remove(folder)
+        _persist_whitelist()

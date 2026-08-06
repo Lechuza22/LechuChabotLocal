@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS facts (
     UNIQUE(category, key)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -249,3 +254,30 @@ def recall_facts(category: str | None = None) -> list[sqlite3.Row]:
 def delete_fact(fact_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+
+
+def delete_all_facts() -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM facts")
+
+
+def delete_all_conversations() -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM conversations")
+
+
+# --- app settings (theme, font size, etc.) ------------------------------------
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )

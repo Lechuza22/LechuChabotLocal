@@ -23,14 +23,14 @@ _OWL_SVG = (
 )
 OWL_AVATAR = "data:image/svg+xml;base64," + base64.b64encode(_OWL_SVG.encode("utf-8")).decode("ascii")
 
-from config import AGENTS_DIR, CONFIG, SKILLS_DIR
+from config import AGENTS_DIR, CONFIG, SKILLS_DIR, add_whitelisted_folder, remove_whitelisted_folder
 from core import memory, projects
 from core.agents import Agent, load_agents
 from core.llm import OllamaClient
 from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import Continue, FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
 from core.tools.datetime_tools import get_current_time
-from core.tools.filesystem import get_active_roots, read_file, set_active_roots
+from core.tools.filesystem import get_active_roots, read_file, read_file_bytes, set_active_roots
 from core.tools.memory_tools import set_memory_scope
 
 # mistral has a strong training bias toward claiming it "can't know the real
@@ -53,6 +53,14 @@ _LANG_BY_EXT = {
     ".c": "c", ".cpp": "cpp", ".rb": "ruby", ".php": "php", ".swift": "swift",
     ".toml": "toml", ".xml": "xml",
 }
+
+_MIME_BY_EXT = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp", ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+_PDF_EXTS = {".pdf"}
 
 
 def _maybe_time_context(user_input: str) -> str | None:
@@ -109,6 +117,8 @@ class UIRefs:
     canvas_container: ui.column
     input_box: ui.input
     send_btn: ui.button
+    outer_splitter: ui.splitter
+    inner_splitter: ui.splitter
 
 
 def _effective_agent(state: AppState) -> Agent:
@@ -120,6 +130,22 @@ def _active_project_row(state: AppState) -> sqlite3.Row | None:
     if state.active_project_id is None:
         return None
     return memory.get_project(state.active_project_id)
+
+
+# --- collapsible panels --------------------------------------------------------
+
+_TREE_EXPANDED, _TREE_COLLAPSED = 19, 0
+_CANVAS_EXPANDED, _CANVAS_COLLAPSED = 62, 100
+
+
+def _toggle_tree(refs: UIRefs) -> None:
+    o = refs.outer_splitter
+    o.value = _TREE_COLLAPSED if o.value > _TREE_COLLAPSED + 1 else _TREE_EXPANDED
+
+
+def _toggle_canvas(refs: UIRefs) -> None:
+    i = refs.inner_splitter
+    i.value = _CANVAS_COLLAPSED if i.value < _CANVAS_COLLAPSED - 1 else _CANVAS_EXPANDED
 
 
 # --- folder-backed projects ---------------------------------------------------
@@ -233,11 +259,19 @@ def build_system_message(agent: Agent, user_input: str, skills: list[Skill]) -> 
 # --- canvas (document preview panel) -----------------------------------------
 
 def _load_into_canvas(state: AppState, path: str) -> None:
+    ext = Path(path).suffix.lower()
     try:
-        fresh = read_file(path)
-        state.canvas = {"path": path, "content": fresh["content"]}
+        if ext in _IMAGE_EXTS or ext in _PDF_EXTS:
+            raw = read_file_bytes(path)
+            mime = _MIME_BY_EXT.get(ext, "application/octet-stream")
+            data_uri = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+            kind = "pdf" if ext in _PDF_EXTS else "image"
+            state.canvas = {"path": path, "kind": kind, "data_uri": data_uri}
+        else:
+            fresh = read_file(path)
+            state.canvas = {"path": path, "kind": "text", "content": fresh["content"]}
     except Exception as e:
-        state.canvas = {"path": path, "error": str(e)}
+        state.canvas = {"path": path, "kind": "error", "error": str(e)}
 
 
 def _scan_for_canvas_update(state: AppState, messages: list[dict], start_index: int) -> None:
@@ -256,10 +290,14 @@ def _scan_for_canvas_update(state: AppState, messages: list[dict], start_index: 
             _load_into_canvas(state, path)
 
 
-def render_canvas(state: AppState, container: ui.column) -> None:
+def render_canvas(state: AppState, refs: UIRefs) -> None:
+    container = refs.canvas_container
     container.clear()
     with container:
-        ui.label("📄 Documentos").classes("text-lg font-bold")
+        with ui.row().classes("items-center justify-between w-full"):
+            ui.label("📄 Documentos").classes("text-lg font-bold")
+            ui.button(icon="keyboard_double_arrow_right", on_click=lambda: _toggle_canvas(refs)) \
+                .props("flat dense round").tooltip("Mostrar/ocultar Documentos")
 
         docs = memory.list_project_documents(state.active_project_id)
         if docs:
@@ -267,7 +305,7 @@ def render_canvas(state: AppState, container: ui.column) -> None:
                 for path in docs:
                     ui.button(
                         Path(path).name,
-                        on_click=lambda p=path: asyncio.create_task(_open_recent_doc(state, container, p)),
+                        on_click=lambda p=path: asyncio.create_task(_open_recent_doc(state, refs, p)),
                     ).props("flat align=left").classes("w-full justify-start")
 
         canvas = state.canvas
@@ -277,35 +315,61 @@ def render_canvas(state: AppState, container: ui.column) -> None:
             return
 
         ui.label(canvas["path"]).classes("text-caption text-gray-500")
-        if canvas.get("error"):
+        kind = canvas.get("kind", "text")
+        if kind == "error":
             ui.label(canvas["error"]).classes("text-red")
             return
 
-        content = canvas["content"]
-        ext = Path(canvas["path"]).suffix.lower()
-        if ext in (".csv", ".tsv"):
-            delimiter = "," if ext == ".csv" else "\t"
-            try:
-                rows = list(csv.DictReader(io.StringIO(content), delimiter=delimiter))
-                if rows:
-                    columns = [{"name": k, "label": k, "field": k} for k in rows[0].keys()]
-                    ui.table(rows=rows, columns=columns, row_key=list(rows[0].keys())[0]).classes("w-full")
-                else:
-                    ui.label("(CSV vacío)")
-            except csv.Error:
-                ui.code(content)
-        elif ext in (".md", ".markdown"):
-            ui.markdown(content)
+        if kind == "image":
+            ui.image(canvas["data_uri"]).classes("w-full")
+        elif kind == "pdf":
+            ui.html(
+                f'<embed src="{canvas["data_uri"]}" type="application/pdf" '
+                'style="width:100%; height:calc(100vh - 220px); border:none;" />'
+            )
         else:
-            ui.code(content, language=_guess_language(ext)).classes("w-full")
+            content = canvas["content"]
+            ext = Path(canvas["path"]).suffix.lower()
+            if ext in (".csv", ".tsv"):
+                delimiter = "," if ext == ".csv" else "\t"
+                try:
+                    rows = list(csv.DictReader(io.StringIO(content), delimiter=delimiter))
+                    if rows:
+                        columns = [{"name": k, "label": k, "field": k} for k in rows[0].keys()]
+                        ui.table(rows=rows, columns=columns, row_key=list(rows[0].keys())[0]).classes("w-full")
+                    else:
+                        ui.label("(CSV vacío)")
+                except csv.Error:
+                    ui.code(content)
+            elif ext in (".md", ".markdown"):
+                ui.markdown(content)
+            else:
+                ui.code(content, language=_guess_language(ext)).classes("w-full")
 
 
-async def _open_recent_doc(state: AppState, container: ui.column, path: str) -> None:
+async def _open_recent_doc(state: AppState, refs: UIRefs, path: str) -> None:
     await run.io_bound(_load_into_canvas, state, path)
-    render_canvas(state, container)
+    render_canvas(state, refs)
 
 
 # --- explorer (file tree) -----------------------------------------------------
+
+def _icon_for_entry(entry: Path) -> tuple[str, str]:
+    if entry.is_dir():
+        return "folder", "#e8a33d"
+    ext = entry.suffix.lower()
+    if ext in _IMAGE_EXTS:
+        return "image", "blue-6"
+    if ext in _PDF_EXTS:
+        return "picture_as_pdf", "red-6"
+    if ext in (".md", ".markdown"):
+        return "article", "blue-grey-6"
+    if ext in (".csv", ".tsv"):
+        return "table_chart", "green-6"
+    if ext in _LANG_BY_EXT:
+        return "code", "teal-6"
+    return "insert_drive_file", "grey-6"
+
 
 def _build_tree_nodes(folder: Path, depth: int = 0, max_entries: int = 300, max_depth: int = 8) -> list[dict]:
     if depth > max_depth:
@@ -317,7 +381,8 @@ def _build_tree_nodes(folder: Path, depth: int = 0, max_entries: int = 300, max_
     entries = [e for e in entries if not e.name.startswith(".")][:max_entries]
     nodes = []
     for entry in entries:
-        node: dict = {"id": str(entry), "label": entry.name}
+        icon, icon_color = _icon_for_entry(entry)
+        node: dict = {"id": str(entry), "label": entry.name, "icon": icon, "iconColor": icon_color}
         if entry.is_dir():
             node["children"] = _build_tree_nodes(entry, depth + 1, max_entries, max_depth)
         nodes.append(node)
@@ -330,7 +395,10 @@ def render_explorer(state: AppState, refs: UIRefs) -> None:
     with container:
         with ui.row().classes("items-center justify-between w-full"):
             ui.label("🗂️ Explorer").classes("text-lg font-bold")
-            ui.button(icon="refresh", on_click=lambda: render_explorer(state, refs)).props("flat dense")
+            with ui.row().classes("items-center gap-0"):
+                ui.button(icon="refresh", on_click=lambda: render_explorer(state, refs)).props("flat dense")
+                ui.button(icon="keyboard_double_arrow_left", on_click=lambda: _toggle_tree(refs)) \
+                    .props("flat dense round").tooltip("Mostrar/ocultar Explorer")
 
         project = _active_project_row(state)
         if not (project and project["folder_path"]):
@@ -477,7 +545,7 @@ async def _advance(state: AppState, refs: UIRefs, agent: Agent) -> None:
 
         await run.io_bound(persist_new_messages, state.conversation_id, state.messages, start_len)
         _scan_for_canvas_update(state, state.messages, start_len)
-        render_canvas(state, refs.canvas_container)
+        render_canvas(state, refs)
 
         if isinstance(result, PendingConfirmation):
             tool_result = await _ask_confirmation(refs.chat_container, agent, result)
@@ -488,7 +556,7 @@ async def _advance(state: AppState, refs: UIRefs, agent: Agent) -> None:
             await run.io_bound(persist_new_messages, state.conversation_id, state.messages, pre_append_len)
             if result.tool_name in ("read_file", "write_file") and "error" not in tool_result:
                 await run.io_bound(_load_into_canvas, state, tool_result["path"])
-                render_canvas(state, refs.canvas_container)
+                render_canvas(state, refs)
                 render_explorer(state, refs)
             await _advance(state, refs, agent)
 
@@ -544,7 +612,6 @@ def build_page() -> None:
     @ui.page("/")
     async def main_page() -> None:
         ui.colors(primary="#a5693a", secondary="#e8a33d", accent="#c98f52")
-        ui.query("body").classes("bg-[#faf9f6]")
         ui.add_head_html("""
             <style>
             @keyframes lechu-wiggle {
@@ -555,19 +622,37 @@ def build_page() -> None:
                 display: inline-block;
                 font-size: 1.3em;
                 transform-origin: 50% 80%;
+            }
+            body.lechu-wiggle-on .lechu-thinking-owl {
                 animation: lechu-wiggle 0.8s ease-in-out infinite;
             }
+
+            /* brandbook theme - light (default) and dark ("dos temas, una madera") */
+            body { background: #faf9f6; }
+            .q-drawer { background: #f2f1ef; }
             /* Quasar's chat bubble uses `background: currentColor`, so overriding
                `color` here repaints the bubble itself to match the brandbook
                instead of Quasar's default light-green for received messages. */
-            .q-message-text--received {
-                color: #f2f1ef;
-            }
-            .q-message-text-content--received {
-                color: #2b2925;
-            }
+            .q-message-text--received { color: #f2f1ef; }
+            .q-message-text-content--received { color: #2b2925; }
+
+            body.body--dark { background: #2a1215; }
+            body.body--dark .q-drawer { background: #34363c; color: #f2f1ef; }
+            body.body--dark .q-message-text--received { color: #5c2b2e; }
+            body.body--dark .q-message-text-content--received { color: #f2f1ef; }
+
+            /* font size */
+            body.lechu-font-small .q-message-text-content { font-size: 0.85em; }
+            body.lechu-font-medium .q-message-text-content { font-size: 1em; }
+            body.lechu-font-large .q-message-text-content { font-size: 1.2em; }
             </style>
         """)
+
+        initial_font_size = memory.get_setting("font_size", "medium")
+        initial_wiggle = memory.get_setting("wiggle", "on")
+        ui.query("body").classes(
+            f"lechu-font-{initial_font_size} " + ("lechu-wiggle-on" if initial_wiggle == "on" else "")
+        )
 
         agents = get_agents()
         if not agents:
@@ -587,19 +672,20 @@ def build_page() -> None:
         if available_models and state.active_model not in available_models:
             state.active_model = available_models[0]
 
+        refs_holder: dict = {}
+
         with ui.header().classes("items-center justify-between bg-[#a5693a]"):
             ui.label("🦉 Lechu").classes("text-xl font-bold")
 
-        with ui.left_drawer(value=True, bordered=True).classes("bg-[#f2f1ef]") as drawer:
-            refs_holder: dict = {}
+        with ui.left_drawer(value=True, bordered=True) as drawer:
             render_sidebar(state, agents, available_models, refs_holder)
 
-        with ui.splitter(value=19).classes("w-full") \
+        with ui.splitter(value=_TREE_EXPANDED).classes("w-full") \
                 .style("height: calc(100vh - 64px)") as outer:
             with outer.before:
                 tree_container = ui.column().classes("w-full h-full overflow-auto p-2")
             with outer.after:
-                with ui.splitter(value=62).classes("w-full h-full") as inner:
+                with ui.splitter(value=_CANVAS_EXPANDED).classes("w-full h-full") as inner:
                     with inner.before:
                         with ui.column().classes("w-full h-full p-2"):
                             chat_container = ui.column().classes("w-full flex-grow overflow-auto")
@@ -615,6 +701,8 @@ def build_page() -> None:
             canvas_container=canvas_container,
             input_box=input_box,
             send_btn=send_btn,
+            outer_splitter=outer,
+            inner_splitter=inner,
         )
         refs_holder["refs"] = refs
 
@@ -623,7 +711,16 @@ def build_page() -> None:
 
         render_chat_history(state, chat_container)
         render_explorer(state, refs)
-        render_canvas(state, canvas_container)
+        render_canvas(state, refs)
+
+
+async def _confirm_dialog(message: str) -> bool:
+    with ui.dialog() as dialog, ui.card():
+        ui.label(message)
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancelar", on_click=lambda: dialog.submit(False))
+            ui.button("Confirmar", on_click=lambda: dialog.submit(True), color="red")
+    return bool(await dialog)
 
 
 # --- sidebar -------------------------------------------------------------------
@@ -650,7 +747,7 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         refs = refs_holder["refs"]
         render_chat_history(state, refs.chat_container)
         render_explorer(state, refs)
-        render_canvas(state, refs.canvas_container)
+        render_canvas(state, refs)
         history_panel.refresh()
         folder_caption.refresh()
 
@@ -667,7 +764,7 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         project_selector.refresh()
         render_chat_history(state, refs.chat_container)
         render_explorer(state, refs)
-        render_canvas(state, refs.canvas_container)
+        render_canvas(state, refs)
         history_panel.refresh()
         folder_caption.refresh()
 
@@ -709,7 +806,7 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         await start_new_conversation(state, _effective_agent(state))
         refs = refs_holder["refs"]
         render_chat_history(state, refs.chat_container)
-        render_canvas(state, refs.canvas_container)
+        render_canvas(state, refs)
         history_panel.refresh()
 
     ui.button("Nueva conversación", on_click=_new_conversation).classes("w-full")
@@ -732,7 +829,7 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
             refs = refs_holder["refs"]
             render_chat_history(state, refs.chat_container)
             render_explorer(state, refs)
-            render_canvas(state, refs.canvas_container)
+            render_canvas(state, refs)
             project_selector.refresh()
             folder_caption.refresh()
             history_panel.refresh()
@@ -795,9 +892,94 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
 
         skills_panel()
 
-    with ui.expansion("Carpetas habilitadas").classes("w-full"):
-        for folder in CONFIG.filesystem.whitelisted_folders:
-            ui.code(str(folder))
+    with ui.expansion("⚙️ Settings").classes("w-full"):
+        ui.label("Apariencia").classes("font-bold text-sm")
+
+        theme_is_dark = memory.get_setting("theme", "light") == "dark"
+        dark_mode_el = ui.dark_mode(value=theme_is_dark)
+
+        async def _on_theme_change(value: bool) -> None:
+            await run.io_bound(memory.set_setting, "theme", "dark" if value else "light")
+
+        ui.switch(
+            "Tema oscuro",
+            value=theme_is_dark,
+            on_change=lambda e: (dark_mode_el.set_value(e.value), asyncio.create_task(_on_theme_change(e.value))),
+        )
+
+        def _apply_font_size(size: str) -> None:
+            ui.query("body").classes(
+                remove="lechu-font-small lechu-font-medium lechu-font-large",
+                add=f"lechu-font-{size}",
+            )
+
+        async def _on_font_change(e) -> None:
+            _apply_font_size(e.value)
+            await run.io_bound(memory.set_setting, "font_size", e.value)
+
+        ui.select(
+            {"small": "Chico", "medium": "Mediano", "large": "Grande"},
+            value=memory.get_setting("font_size", "medium"),
+            label="Tamaño de letra",
+            on_change=_on_font_change,
+        ).classes("w-full")
+
+        async def _on_wiggle_change(e) -> None:
+            ui.query("body").classes(add="lechu-wiggle-on" if e.value else "", remove="" if e.value else "lechu-wiggle-on")
+            await run.io_bound(memory.set_setting, "wiggle", "on" if e.value else "off")
+
+        ui.switch(
+            "Animación de la lechuza al pensar",
+            value=memory.get_setting("wiggle", "on") == "on",
+            on_change=_on_wiggle_change,
+        )
+
+        ui.separator()
+        ui.label("Carpetas habilitadas").classes("font-bold text-sm")
+        ui.label("Carpetas por defecto (sin proyecto abierto) donde Lechu puede leer/escribir.") \
+            .classes("text-caption text-gray-500")
+
+        @ui.refreshable
+        def folders_panel() -> None:
+            for folder in CONFIG.filesystem.whitelisted_folders:
+                with ui.row().classes("items-center justify-between w-full"):
+                    ui.label(str(folder)).classes("text-caption")
+                    ui.button(
+                        icon="delete", on_click=lambda f=folder: (remove_whitelisted_folder(str(f)), folders_panel.refresh()),
+                    ).props("flat dense round color=red")
+
+        folders_panel()
+
+        async def _add_folder() -> None:
+            result = await app.native.main_window.create_file_dialog(dialog_type=webview.FileDialog.FOLDER)
+            if not result:
+                return
+            path = result[0] if isinstance(result, (list, tuple)) else result
+            await run.io_bound(add_whitelisted_folder, path)
+            folders_panel.refresh()
+
+        ui.button("+ Agregar carpeta", on_click=_add_folder).classes("w-full")
+
+        ui.separator()
+        ui.label("Zona de peligro").classes("font-bold text-sm text-red")
+
+        async def _reset_facts() -> None:
+            if await _confirm_dialog("¿Borrar TODOS los hechos guardados? Esta acción no se puede deshacer."):
+                await run.io_bound(memory.delete_all_facts)
+                memory_panel.refresh()
+                ui.notify("Hechos borrados", type="positive")
+
+        async def _reset_conversations() -> None:
+            if await _confirm_dialog("¿Borrar TODAS las conversaciones? Esta acción no se puede deshacer."):
+                await run.io_bound(memory.delete_all_conversations)
+                refs = refs_holder["refs"]
+                await start_new_conversation(state, _effective_agent(state))
+                render_chat_history(state, refs.chat_container)
+                history_panel.refresh()
+                ui.notify("Conversaciones borradas", type="positive")
+
+        ui.button("Borrar todos los hechos", on_click=_reset_facts).props("outline color=red").classes("w-full")
+        ui.button("Borrar todas las conversaciones", on_click=_reset_conversations).props("outline color=red").classes("w-full")
 
 
 def main() -> None:

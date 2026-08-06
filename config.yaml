@@ -1,8 +1,7 @@
-ollama_base_url: "http://localhost:11434"
+ollama_base_url: http://localhost:11434
 default_agent: general
 max_tool_iterations: 6
-
 filesystem:
   whitelisted_folders:
-    - "/Users/lechu/ChatbotSandbox"
+  - /Users/lechu/ChatbotSandbox
   max_file_size_bytes: 5000000

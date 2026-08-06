@@ -68,6 +68,19 @@ def read_file(path: str) -> dict:
     return {"path": str(target), "content": target.read_text(errors="replace")}
 
 
+def read_file_bytes(path: str) -> bytes:
+    """Same whitelist/size guard as read_file, but for binary content (images, PDFs)
+    that the UI's document preview needs raw - not a registered LLM tool."""
+    target = _resolve_and_validate(path)
+    if not target.exists():
+        raise FileNotFoundError(f"'{path}' does not exist")
+    if not target.is_file():
+        raise IsADirectoryError(f"'{path}' is not a file")
+    if target.stat().st_size > MAX_FILE_SIZE:
+        raise ValueError(f"'{path}' exceeds the max readable size ({MAX_FILE_SIZE} bytes)")
+    return target.read_bytes()
+
+
 def write_file(path: str, content: str) -> dict:
     target = _resolve_and_validate(path)
     if len(content.encode()) > MAX_FILE_SIZE:
