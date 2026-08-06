@@ -1,24 +1,26 @@
-# Lechu 🦉 (Ollama + Streamlit)
+# Lechu 🦉 (Ollama + NiceGUI)
 
-Chatbot 100% offline: interfaz Streamlit, inferencia con Ollama local,
-memoria persistente en SQLite, acceso a carpetas whitelisteadas, agentes con
-roles/tools específicas y skills en Markdown para automatizar tareas.
+Chatbot 100% offline: interfaz nativa de escritorio (NiceGUI), inferencia
+async con Ollama local, memoria persistente en SQLite, proyectos con carpeta
+real + explorer tipo VS Code, agentes con roles/tools específicas y skills
+en Markdown para automatizar tareas.
 
-Fase 1 (esta versión): chat + memoria + filesystem + agentes/tools + skills.
-Fase 2 (futura): integraciones con Google Drive/Gmail/Calendar — requieren
-su propio proyecto OAuth en Google Cloud y conexión a internet.
+Fase 1 (esta versión): chat + memoria + filesystem + agentes/tools + skills
++ proyectos con carpeta real. Fase 2 (futura): integraciones con Google
+Drive/Gmail/Calendar — requieren su propio proyecto OAuth en Google Cloud y
+conexión a internet.
 
 ## Abrir la app
 
-**Opción rápida:** doble click en `Lechu.app`. Arranca Ollama y el servidor
-si hace falta (o reusa los que ya estén corriendo) y abre una ventana nativa
-de Mac (vía `pywebview`, sin barra de navegador ni ventana de Terminal)
-apuntando al servidor local. Podés arrastrarlo a `/Applications` o al Dock.
-La primera vez que lo abras, macOS va a avisar que es de un desarrollador no
-identificado (Gatekeeper) — hacé click derecho → Abrir para confirmar una
-sola vez. Los logs quedan en `data/lechu_launcher.log`. Cerrar la ventana
-cierra la app, pero el servidor Streamlit/Ollama siguen corriendo en
-segundo plano (así la próxima apertura es instantánea).
+**Opción rápida:** doble click en `Lechu.app`. Arranca Ollama si hace falta
+y abre una ventana nativa de Mac (NiceGUI en modo `native=True`, sin barra
+de navegador ni ventana de Terminal). Podés arrastrarlo a `/Applications` o
+al Dock. La primera vez que lo abras, macOS va a avisar que es de un
+desarrollador no identificado (Gatekeeper) — hacé click derecho → Abrir
+para confirmar una sola vez. Los logs quedan en `data/lechu_launcher.log`.
+A diferencia de la versión anterior, cerrar la ventana termina el proceso
+del todo (servidor y ventana corren juntos) — la próxima apertura es un
+arranque en frío, pero rápido, porque todo es local.
 
 **Setup manual / desarrollo:**
 
@@ -27,7 +29,7 @@ ollama serve  # si no está corriendo ya
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-streamlit run app.py
+python3 app.py
 ```
 
 ## Configuración (`config.yaml`)

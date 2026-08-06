@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Iterator, NamedTuple, Union
+from typing import AsyncIterator, NamedTuple, Union
+
+from nicegui import run
 
 from core.agents import Agent
 from core.llm import OllamaClient
@@ -43,20 +45,20 @@ def execute_tool(tool_name: str, args: dict) -> dict:
         return {"error": str(e)}
 
 
-def step_agent_stream(client: OllamaClient, agent: Agent, messages: list[dict]) -> tuple[Iterator[str], dict]:
+async def step_agent_stream(client: OllamaClient, agent: Agent, messages: list[dict]) -> tuple[AsyncIterator[str], dict]:
     """Streams one model turn's reply.
 
     Returns (chunks, box). `chunks` yields text pieces as they arrive - drive
-    it to completion (e.g. via st.write_stream) before reading box["result"],
+    it to completion (e.g. via _stream_into_chat) before reading box["result"],
     which is only populated once the generator is exhausted. Tool-call chunks
     carry no content, so turns that end up calling a tool just yield nothing.
     """
     box: dict = {"result": None}
 
-    def _gen() -> Iterator[str]:
+    async def _gen() -> AsyncIterator[str]:
         full_content = ""
         tool_calls = None
-        for chunk in client.chat_stream(
+        async for chunk in client.chat_stream(
             model=agent.model, messages=messages, tools=[t.schema for t in agent.tools]
         ):
             msg = chunk.get("message", {})
@@ -90,7 +92,8 @@ def step_agent_stream(client: OllamaClient, agent: Agent, messages: list[dict]) 
                 box["result"] = PendingConfirmation(call_id, name, args)
                 return
             else:
-                _append_tool_result(messages, call_id, execute_tool(name, args))
+                result = await run.io_bound(execute_tool, name, args)
+                _append_tool_result(messages, call_id, result if result is not None else {"error": "cancelled"})
 
         box["result"] = Continue()
 
