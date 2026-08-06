@@ -8,6 +8,7 @@ import io
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
@@ -24,28 +25,58 @@ _OWL_SVG = (
 )
 OWL_AVATAR = "data:image/svg+xml;base64," + base64.b64encode(_OWL_SVG.encode("utf-8")).decode("ascii")
 
+# Vendored Tabler Icons (MIT) for the file explorer's per-type icons, kept
+# fully offline (no CDN). These are consumed via a custom `default-header`
+# slot on ui.tree (see render_explorer), not QIcon's `name` prop - Quasar's
+# QIcon has a hardcoded prefix map where "ti-" already means Themify Icons,
+# not Tabler, so a raw data URI rendered through our own <img> template
+# sidesteps that collision entirely instead of fighting it.
+_TABLER_ICONS_DIR = Path(__file__).resolve().parent / "assets" / "tabler_icons"
+
+
+def _load_tabler_svg(slug: str, color: str) -> str:
+    raw = (_TABLER_ICONS_DIR / f"{slug}.svg").read_text(encoding="utf-8")
+    colored = raw.replace("currentColor", color)
+    return "data:image/svg+xml;base64," + base64.b64encode(colored.encode("utf-8")).decode("ascii")
+
+
+_FILETYPE_ICONS: dict[str, tuple[str, str]] = {
+    "folder": ("folder", "#e8a838"),
+    "js": ("file-type-js", "#f0db4f"),
+    "jsx": ("file-type-jsx", "#61dafb"),
+    "css": ("file-type-css", "#264de4"),
+    "json": ("braces", "#8bc34a"),
+    "md": ("markdown", "#8a8578"),
+    "image": ("photo", "#e91e63"),
+    "design": ("vector-bezier", "#a259ff"),
+    "sheet": ("table", "#1d6f42"),
+    "cfg": ("settings", "#8a8578"),
+    "pdf": ("file-type-pdf", "#e53935"),
+    "code": ("file-code", "#2dd4bf"),
+    "default": ("file", "#8a8578"),
+}
+_TABLER_ICON_CACHE: dict[str, str] = {
+    category: _load_tabler_svg(slug, color) for category, (slug, color) in _FILETYPE_ICONS.items()
+}
+
+
+def _tabler_icon(category: str) -> str:
+    return _TABLER_ICON_CACHE[category]
+
+
 from config import AGENTS_DIR, CONFIG, SKILLS_DIR, add_whitelisted_folder, remove_whitelisted_folder
-from core import memory, projects
+from core import google_auth, memory, projects
 from core.agents import Agent, load_agents
 from core.llm import OllamaClient
+from core.secrets import delete_secret, get_secret, set_secret
 from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import Continue, FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
+from core.tools import maps as maps_tools
 from core.tools.datetime_tools import get_current_time
-from core.tools.filesystem import get_active_roots, read_file, read_file_bytes, set_active_roots
-from core.tools.memory_tools import set_memory_scope
-
-# mistral has a strong training bias toward claiming it "can't know the real
-# time", which fights the get_current_time tool call even when instructed
-# (empirically ~15-30% success). For this narrow, unambiguous, read-only
-# query we skip relying on tool-calling and inject the real system clock
-# straight into the system prompt instead - same keyword-injection mechanism
-# as skills, just backed by live data instead of a markdown file.
-_TIME_KEYWORDS = (
-    "qué hora", "que hora", "hora es", "hora actual",
-    "qué día es", "que dia es", "fecha de hoy", "fecha actual",
-    "what time", "current time", "time is it",
-    "today's date", "current date", "what's the date", "what is the date",
+from core.tools.filesystem import (
+    create_folder, get_active_roots, read_file, read_file_bytes, set_active_roots, write_file,
 )
+from core.tools.memory_tools import set_memory_scope
 
 _LANG_BY_EXT = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".json": "json",
@@ -65,15 +96,21 @@ _PDF_EXTS = {".pdf"}
 _EXCEL_EXTS = {".xlsx", ".xlsm"}
 
 
-def _maybe_time_context(user_input: str) -> str | None:
-    q = user_input.lower()
-    if not any(kw in q for kw in _TIME_KEYWORDS):
-        return None
+# mistral has a strong training bias toward claiming it "can't know the real
+# time", which fights the get_current_time tool call even when instructed
+# (empirically ~15-30% success). Originally this was only injected when the
+# user's message matched a narrow set of "what time is it"-style keywords,
+# but that missed the much more common implicit case (scheduling requests
+# like "creá un evento hoy...", "invitá a X el viernes") where the model
+# still needs to know "now" but never says so explicitly - it silently
+# defaulted to a training-era date (2023) instead. Unconditional and cheap,
+# so now it's just always included.
+def _time_context() -> str:
     info = get_current_time()
     return (
         f"The user's local system time right now is {info['time']} on {info['date']} "
-        f"({info['weekday']}). If asked about the current time or date, answer naturally "
-        f"using this real value instead of saying you don't have access to it."
+        f"({info['weekday']}). Use this as the real current date/time for anything "
+        f"relative ('today', 'tomorrow', 'this week') - never assume or guess a date."
     )
 
 
@@ -115,12 +152,11 @@ class AppState:
 @dataclass
 class UIRefs:
     chat_container: ui.column
-    tree_container: ui.column
+    files_container: ui.column
     canvas_container: ui.column
     input_box: ui.input
     send_btn: ui.button
-    outer_splitter: ui.splitter
-    inner_splitter: ui.splitter
+    content_splitter: ui.splitter
 
 
 def _effective_agent(state: AppState) -> Agent:
@@ -136,18 +172,12 @@ def _active_project_row(state: AppState) -> sqlite3.Row | None:
 
 # --- collapsible panels --------------------------------------------------------
 
-_TREE_EXPANDED, _TREE_COLLAPSED = 19, 0
 _CANVAS_EXPANDED, _CANVAS_COLLAPSED = 62, 100
 
 
-def _toggle_tree(refs: UIRefs) -> None:
-    o = refs.outer_splitter
-    o.value = _TREE_COLLAPSED if o.value > _TREE_COLLAPSED + 1 else _TREE_EXPANDED
-
-
 def _toggle_canvas(refs: UIRefs) -> None:
-    i = refs.inner_splitter
-    i.value = _CANVAS_COLLAPSED if i.value < _CANVAS_COLLAPSED - 1 else _CANVAS_EXPANDED
+    s = refs.content_splitter
+    s.value = _CANVAS_COLLAPSED if s.value < _CANVAS_COLLAPSED - 1 else _CANVAS_EXPANDED
 
 
 # --- folder-backed projects ---------------------------------------------------
@@ -248,9 +278,7 @@ def build_system_message(agent: Agent, user_input: str, skills: list[Skill]) -> 
             "use exactly this folder."
         )
 
-    time_context = _maybe_time_context(user_input)
-    if time_context:
-        text += "\n\n" + time_context
+    text += "\n\n" + _time_context()
     if matched:
         text += "\n\n# Relevant skill instructions:\n" + "\n\n".join(
             f"## {s.name}\n{s.body}" for s in matched
@@ -346,11 +374,13 @@ def render_canvas(state: AppState, refs: UIRefs) -> None:
             # sanitize=False: ui.html defaults to client-side DOMPurify sanitization,
             # which silently strips <embed> (not in its allowed-tags list) - the
             # data URI is our own base64 of a file we just read, not user input.
+            # #view=FitH: Chromium's built-in PDF viewer otherwise opens at a fixed
+            # zoom level instead of filling the available width.
             ui.html(
-                f'<embed src="{canvas["data_uri"]}" type="application/pdf" '
+                f'<embed src="{canvas["data_uri"]}#view=FitH" type="application/pdf" '
                 'style="width:100%; height:calc(100vh - 220px); border:none;" />',
                 sanitize=False,
-            )
+            ).classes("w-full")
         elif kind == "excel":
             rows = canvas["rows"]
             if rows:
@@ -385,21 +415,45 @@ async def _open_recent_doc(state: AppState, refs: UIRefs, path: str) -> None:
 
 # --- explorer (file tree) -----------------------------------------------------
 
-def _icon_for_entry(entry: Path) -> tuple[str, str]:
+_DESIGN_EXTS = {".fig", ".sketch", ".psd", ".ai", ".xd"}
+_CFG_EXTS = {".yaml", ".yml", ".toml", ".ini", ".cfg", ".env", ".conf"}
+
+_TREE_HEADER_SLOT = """
+    <div class="row items-center no-wrap full-width lechu-tree-row">
+      <img :src="props.node.icon" width="16" height="16" class="q-mr-xs" />
+      <div class="ellipsis">{{ props.node.label }}</div>
+      <q-badge v-if="props.node.count" class="lechu-tree-badge q-ml-sm" :label="props.node.count" />
+    </div>
+"""
+
+
+def _icon_for_entry(entry: Path) -> str:
     if entry.is_dir():
-        return "folder", "#e8a33d"
+        return _tabler_icon("folder")
     ext = entry.suffix.lower()
-    if ext in _IMAGE_EXTS:
-        return "image", "blue-6"
-    if ext in _PDF_EXTS:
-        return "picture_as_pdf", "red-6"
+    if ext == ".js":
+        return _tabler_icon("js")
+    if ext == ".jsx":
+        return _tabler_icon("jsx")
+    if ext == ".css":
+        return _tabler_icon("css")
+    if ext == ".json":
+        return _tabler_icon("json")
     if ext in (".md", ".markdown"):
-        return "article", "blue-grey-6"
+        return _tabler_icon("md")
+    if ext in _IMAGE_EXTS:
+        return _tabler_icon("image")
+    if ext in _DESIGN_EXTS:
+        return _tabler_icon("design")
     if ext in (".csv", ".tsv") or ext in _EXCEL_EXTS:
-        return "table_chart", "green-6"
+        return _tabler_icon("sheet")
+    if ext in _CFG_EXTS:
+        return _tabler_icon("cfg")
+    if ext in _PDF_EXTS:
+        return _tabler_icon("pdf")
     if ext in _LANG_BY_EXT:
-        return "code", "teal-6"
-    return "insert_drive_file", "grey-6"
+        return _tabler_icon("code")
+    return _tabler_icon("default")
 
 
 def _build_tree_nodes(folder: Path, depth: int = 0, max_entries: int = 300, max_depth: int = 8) -> list[dict]:
@@ -412,39 +466,128 @@ def _build_tree_nodes(folder: Path, depth: int = 0, max_entries: int = 300, max_
     entries = [e for e in entries if not e.name.startswith(".")][:max_entries]
     nodes = []
     for entry in entries:
-        icon, icon_color = _icon_for_entry(entry)
-        node: dict = {"id": str(entry), "label": entry.name, "icon": icon, "iconColor": icon_color}
+        node: dict = {"id": str(entry), "label": entry.name, "icon": _icon_for_entry(entry)}
         if entry.is_dir():
-            node["children"] = _build_tree_nodes(entry, depth + 1, max_entries, max_depth)
+            children = _build_tree_nodes(entry, depth + 1, max_entries, max_depth)
+            node["children"] = children
+            node["count"] = len(children)
         nodes.append(node)
     return nodes
 
 
+def _collect_expand_ids(nodes: list[dict], query: str, ancestors: tuple[str, ...] = ()) -> set[str]:
+    """Ids of every folder that needs to be force-expanded to reveal a search match
+    somewhere below it - ui.tree's own `filter` already hides/shows rows, but doesn't
+    auto-expand collapsed ancestors of a match."""
+    result: set[str] = set()
+    for node in nodes:
+        children = node.get("children")
+        self_matches = query in node["label"].lower()
+        child_ids = _collect_expand_ids(children, query, ancestors + (node["id"],)) if children else set()
+        if self_matches or child_ids:
+            result.update(ancestors)
+        result |= child_ids
+    return result
+
+
+def _active_base_folder(state: AppState) -> Path | None:
+    project = _active_project_row(state)
+    if project and project["folder_path"]:
+        return Path(project["folder_path"])
+    roots = get_active_roots()
+    return roots[0] if roots else None
+
+
+async def _prompt_dialog(message: str) -> str | None:
+    with ui.dialog() as dialog, ui.card():
+        ui.label(message)
+        name_input = ui.input().classes("w-full")
+        name_input.on("keydown.enter", lambda: dialog.submit(name_input.value))
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancelar", on_click=lambda: dialog.submit(None))
+            ui.button("Crear", on_click=lambda: dialog.submit(name_input.value), color="primary")
+    return await dialog
+
+
+async def _new_folder_dialog(state: AppState, refs: UIRefs) -> None:
+    name = await _prompt_dialog("Nombre de la nueva carpeta:")
+    if not name:
+        return
+    base = _active_base_folder(state)
+    if base is None:
+        ui.notify("Abrí una carpeta primero.", type="warning")
+        return
+    try:
+        await run.io_bound(create_folder, str(base / name))
+        render_explorer(state, refs)
+    except Exception as e:
+        ui.notify(str(e), type="negative")
+
+
+async def _new_file_dialog(state: AppState, refs: UIRefs) -> None:
+    name = await _prompt_dialog("Nombre del nuevo archivo:")
+    if not name:
+        return
+    base = _active_base_folder(state)
+    if base is None:
+        ui.notify("Abrí una carpeta primero.", type="warning")
+        return
+    try:
+        await run.io_bound(write_file, str(base / name), "")
+        render_explorer(state, refs)
+    except Exception as e:
+        ui.notify(str(e), type="negative")
+
+
 def render_explorer(state: AppState, refs: UIRefs) -> None:
-    container = refs.tree_container
+    container = refs.files_container
     container.clear()
+    tree_holder: dict = {}
     with container:
-        with ui.row().classes("items-center justify-between w-full"):
-            ui.label("🗂️ Explorer").classes("text-lg font-bold")
+        with ui.row().classes("items-center justify-between w-full q-px-sm q-pt-sm"):
+            ui.label("EXPLORADOR").classes("lechu-section-label")
             with ui.row().classes("items-center gap-0"):
-                ui.button(icon="refresh", on_click=lambda: render_explorer(state, refs)).props("flat dense")
-                ui.button(icon="keyboard_double_arrow_left", on_click=lambda: _toggle_tree(refs)) \
-                    .props("flat dense round").tooltip("Mostrar/ocultar Explorer")
+                ui.button(icon="create_new_folder",
+                          on_click=lambda: asyncio.create_task(_new_folder_dialog(state, refs))) \
+                    .props("flat dense round").tooltip("Nueva carpeta")
+                ui.button(icon="note_add",
+                          on_click=lambda: asyncio.create_task(_new_file_dialog(state, refs))) \
+                    .props("flat dense round").tooltip("Nuevo archivo")
+                ui.button(icon="unfold_less",
+                          on_click=lambda: tree_holder["tree"].collapse()) \
+                    .props("flat dense round").tooltip("Colapsar todo")
 
         project = _active_project_row(state)
         if not (project and project["folder_path"]):
-            ui.label("Abrí una carpeta desde la sidebar para ver sus archivos acá.") \
-                .classes("text-caption text-gray-500")
+            ui.label("Abrí una carpeta desde arriba para ver sus archivos acá.") \
+                .classes("text-caption text-gray-500 q-px-sm")
             return
 
         folder = Path(project["folder_path"])
-        ui.label(folder.name).classes("text-caption text-gray-500")
         nodes = _build_tree_nodes(folder)
+
+        search_input = ui.input(placeholder="Buscar archivos...") \
+            .props("dense borderless").classes("w-full lechu-search q-px-sm")
+        with search_input.add_slot("prepend"):
+            ui.icon("search").classes("text-sm")
+
         if not nodes:
-            ui.label("(carpeta vacía)").classes("text-caption text-gray-500")
+            ui.label("(carpeta vacía)").classes("text-caption text-gray-500 q-px-sm")
             return
-        ui.tree(nodes, node_key="id", label_key="label",
-                on_select=lambda e: _on_tree_select(state, refs, e.value))
+
+        tree = ui.tree(nodes, node_key="id", label_key="label",
+                        on_select=lambda e: _on_tree_select(state, refs, e.value)) \
+            .props("no-connectors dense").classes("lechu-tree w-full")
+        tree.add_slot("default-header", _TREE_HEADER_SLOT)
+        tree_holder["tree"] = tree
+
+        def _on_files_search_change(e) -> None:
+            text = (e.value or "").strip()
+            tree.set_filter(text)
+            if text:
+                tree.expand(list(_collect_expand_ids(nodes, text.lower())))
+
+        search_input.on_value_change(_on_files_search_change)
 
 
 def _on_tree_select(state: AppState, refs: UIRefs, node_id: str | None) -> None:
@@ -517,6 +660,30 @@ async def _stream_into_chat(
 
 # --- turn driving --------------------------------------------------------
 
+def _summarize_tool_call(tool_name: str, args: dict) -> str:
+    if tool_name == "write_file":
+        return f"Quiere escribir el archivo {args.get('path', '?')}"
+    if tool_name == "delete_file":
+        return f"Quiere borrar el archivo {args.get('path', '?')}"
+    if tool_name == "write_drive_file":
+        action = "sobrescribir" if args.get("file_id") else "crear"
+        return f"Quiere {action} el archivo de Drive \"{args.get('name', '?')}\""
+    if tool_name == "send_email":
+        return f"Quiere enviar un mail a {args.get('to', '?')} con asunto \"{args.get('subject', '?')}\""
+    if tool_name == "manage_calendar_event":
+        action = args.get("action")
+        title = args.get("title", "?")
+        if action == "create":
+            color = f" (color {args['color']})" if args.get("color") else ""
+            guests = f" e invitar a {', '.join(args['attendees'])}" if args.get("attendees") else ""
+            return f"Quiere crear el evento \"{title}\" el {args.get('start', '?')}{color}{guests}"
+        if action == "update":
+            return f"Quiere modificar el evento {args.get('event_id', '?')}"
+        if action == "delete":
+            return f"Quiere borrar el evento {args.get('event_id', '?')}"
+    return f"Quiere ejecutar {tool_name}"
+
+
 async def _ask_confirmation(container: ui.column, agent: Agent, pc: PendingConfirmation) -> dict:
     future: asyncio.Future = asyncio.get_event_loop().create_future()
     holder: dict = {}
@@ -532,8 +699,7 @@ async def _ask_confirmation(container: ui.column, agent: Agent, pc: PendingConfi
 
     with container:
         with ui.chat_message(name=agent.name, avatar=OWL_AVATAR):
-            ui.label(f"Quiero ejecutar {pc.tool_name} con estos argumentos:").classes("text-orange-700 font-medium")
-            ui.code(json.dumps(pc.args, indent=2, ensure_ascii=False), language="json")
+            ui.label(_summarize_tool_call(pc.tool_name, pc.args)).classes("text-orange-700 font-medium")
             with ui.row() as btn_row:
                 ui.button("Confirmar", on_click=lambda: _resolve(True), color="primary")
                 ui.button("Cancelar", on_click=lambda: _resolve(False))
@@ -637,6 +803,45 @@ async def _on_submit(state: AppState, refs: UIRefs) -> None:
         refs.send_btn.enable()
 
 
+# --- date bucketing (Historial grouping) ---------------------------------------
+
+_WEEKDAY_ES_ABBR = {0: "Lun", 1: "Mar", 2: "Mié", 3: "Jue", 4: "Vie", 5: "Sáb", 6: "Dom"}
+_BUCKET_ORDER = ("Hoy", "Ayer", "Esta semana", "Más antiguo")
+
+
+def _to_local_dt(updated_at: str) -> datetime | None:
+    """`updated_at` is stored as SQLite's `datetime('now')`, i.e. UTC - convert to
+    local time before bucketing, otherwise "Hoy"/"Ayer" drift near midnight."""
+    try:
+        dt_utc = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+    return dt_utc.astimezone()
+
+
+def _bucket_for(dt_local: datetime | None, today_local: date) -> str:
+    if dt_local is None:
+        return "Más antiguo"
+    d = dt_local.date()
+    if d == today_local:
+        return "Hoy"
+    if d == today_local - timedelta(days=1):
+        return "Ayer"
+    if d >= today_local - timedelta(days=6):
+        return "Esta semana"
+    return "Más antiguo"
+
+
+def _format_timestamp(dt_local: datetime | None, bucket: str) -> str:
+    if dt_local is None:
+        return ""
+    if bucket == "Hoy":
+        return dt_local.strftime("%H:%M")
+    if bucket in ("Ayer", "Esta semana"):
+        return _WEEKDAY_ES_ABBR[dt_local.weekday()]
+    return dt_local.strftime("%d/%m")
+
+
 # --- main page -----------------------------------------------------------------
 
 def build_page() -> None:
@@ -658,17 +863,38 @@ def build_page() -> None:
                 animation: lechu-wiggle 0.8s ease-in-out infinite;
             }
 
-            /* brandbook theme - light (default) and dark ("dos temas, una madera") */
-            body { background: #faf9f6; }
-            .q-drawer { background: #f2f1ef; }
+            /* brandbook theme tokens - light (default) and dark ("dos temas, una madera") */
+            :root {
+                --surface-0: #faf9f6;
+                --surface-1: #f2f1ef;
+                --surface-2: #eae7e1;
+                --text-accent: #a5693a;
+                --bg-accent: rgba(165, 105, 58, 0.12);
+                --text-primary: #2b2925;
+                --text-secondary: rgba(43, 41, 37, 0.65);
+                --text-muted: rgba(43, 41, 37, 0.45);
+                --border: rgba(43, 41, 37, 0.12);
+                --radius-sm: 8px;
+                --radius-md: 12px;
+            }
+            body.body--dark {
+                --surface-0: #2a1215;
+                --surface-1: #34363c;
+                --surface-2: #3d4048;
+                --text-accent: #e8a33d;
+                --bg-accent: rgba(232, 163, 61, 0.16);
+                --text-primary: #f2f1ef;
+                --text-secondary: rgba(242, 241, 239, 0.65);
+                --text-muted: rgba(242, 241, 239, 0.45);
+                --border: rgba(242, 241, 239, 0.12);
+            }
+            body { background: var(--surface-0); font-size: 12.5px; }
+            .q-drawer { background: var(--surface-1); }
             /* Quasar's chat bubble uses `background: currentColor`, so overriding
                `color` here repaints the bubble itself to match the brandbook
                instead of Quasar's default light-green for received messages. */
             .q-message-text--received { color: #f2f1ef; }
             .q-message-text-content--received { color: #2b2925; }
-
-            body.body--dark { background: #2a1215; }
-            body.body--dark .q-drawer { background: #34363c; color: #f2f1ef; }
             body.body--dark .q-message-text--received { color: #5c2b2e; }
             body.body--dark .q-message-text-content--received { color: #f2f1ef; }
 
@@ -676,6 +902,32 @@ def build_page() -> None:
             body.lechu-font-small .q-message-text-content { font-size: 0.85em; }
             body.lechu-font-medium .q-message-text-content { font-size: 1em; }
             body.lechu-font-large .q-message-text-content { font-size: 1.2em; }
+
+            /* sidebar: list items (Historial), section labels, search boxes */
+            .lechu-list-item {
+                display: flex; align-items: center; gap: 8px;
+                padding: 6px 8px; border-radius: var(--radius-sm);
+                color: var(--text-primary); cursor: pointer;
+            }
+            .lechu-list-item:hover { background: var(--surface-2); }
+            .lechu-list-item--active { background: var(--bg-accent); color: var(--text-accent); }
+            .lechu-timestamp { font-size: 10px; color: var(--text-muted); }
+            .lechu-section-label {
+                font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+                color: var(--text-muted); font-weight: 600;
+            }
+            .lechu-search { background: var(--surface-0); border-radius: var(--radius-md); }
+
+            /* sidebar: file tree */
+            .lechu-tree .q-tree__node { padding-left: 14px; }
+            .lechu-tree .q-tree__children { padding-left: 14px; }
+            .lechu-tree .q-tree__node-header { border-radius: var(--radius-sm); }
+            .lechu-tree .q-tree__node-header:hover { background: var(--surface-2); }
+            /* Quasar hardcodes a grey (#9e9e9e) for selected-node text - override
+               or our accent color silently loses to it. */
+            .lechu-tree .q-tree__node--selected .q-tree__node-header { background: var(--bg-accent); }
+            .lechu-tree .q-tree__node--selected .q-tree__node-header-content { color: var(--text-accent) !important; }
+            .lechu-tree-badge { background: var(--surface-2); color: var(--text-muted); font-size: 10px; }
             </style>
         """)
 
@@ -708,32 +960,31 @@ def build_page() -> None:
         with ui.header().classes("items-center justify-between bg-[#a5693a]"):
             ui.label("🦉 Lechu").classes("text-xl font-bold")
 
-        with ui.left_drawer(value=True, bordered=True) as drawer:
-            render_sidebar(state, agents, available_models, refs_holder)
+        # width=250 via .props(), not .style(): Quasar's QDrawer uses its own
+        # `width` prop both for the CSS width AND for the page-content margin
+        # it reserves - a pure .style() override desyncs those two and causes
+        # overlap/gap between the drawer and the content splitter next to it.
+        with ui.left_drawer(value=True, bordered=True).props("width=250").classes("column no-wrap") as drawer:
+            files_container = render_sidebar(state, agents, available_models, refs_holder)
 
-        with ui.splitter(value=_TREE_EXPANDED).classes("w-full") \
-                .style("height: calc(100vh - 64px)") as outer:
-            with outer.before:
-                tree_container = ui.column().classes("w-full h-full overflow-auto p-2")
-            with outer.after:
-                with ui.splitter(value=_CANVAS_EXPANDED).classes("w-full h-full") as inner:
-                    with inner.before:
-                        with ui.column().classes("w-full h-full p-2"):
-                            chat_container = ui.column().classes("w-full flex-grow overflow-auto")
-                            with ui.row().classes("w-full items-center"):
-                                input_box = ui.input(placeholder="Escribí un mensaje...").classes("flex-grow")
-                                send_btn = ui.button(icon="send")
-                    with inner.after:
-                        canvas_container = ui.column().classes("w-full h-full overflow-auto p-2")
+        with ui.splitter(value=_CANVAS_EXPANDED).classes("w-full") \
+                .style("height: calc(100vh - 64px)") as content_splitter:
+            with content_splitter.before:
+                with ui.column().classes("w-full h-full p-2"):
+                    chat_container = ui.column().classes("w-full flex-grow overflow-auto")
+                    with ui.row().classes("w-full items-center"):
+                        input_box = ui.input(placeholder="Escribí un mensaje...").classes("flex-grow")
+                        send_btn = ui.button(icon="send")
+            with content_splitter.after:
+                canvas_container = ui.column().classes("w-full h-full overflow-auto p-2")
 
         refs = UIRefs(
             chat_container=chat_container,
-            tree_container=tree_container,
+            files_container=files_container,
             canvas_container=canvas_container,
             input_box=input_box,
             send_btn=send_btn,
-            outer_splitter=outer,
-            inner_splitter=inner,
+            content_splitter=content_splitter,
         )
         refs_holder["refs"] = refs
 
@@ -756,82 +1007,108 @@ async def _confirm_dialog(message: str) -> bool:
 
 # --- sidebar -------------------------------------------------------------------
 
-def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: list[str], refs_holder: dict) -> None:
-    ui.label("Proyectos").classes("font-bold")
+def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: list[str], refs_holder: dict) -> ui.column:
+    # --- pinned block: Proyecto/Agente/Modelo affect both tabs, always visible ---
+    with ui.column().classes("w-full gap-1 q-pa-sm"):
+        @ui.refreshable
+        def project_selector() -> None:
+            project_rows = memory.list_projects()
+            options = {None: "Sin proyecto"}
+            for p in project_rows:
+                options[p["id"]] = p["name"]
+            with ui.row().classes("w-full items-center gap-1 no-wrap"):
+                ui.select(options, value=state.active_project_id, label="Proyecto",
+                          on_change=lambda e: asyncio.create_task(_on_project_change(e.value))) \
+                    .props("dense outlined options-dense").classes("flex-grow")
+                ui.button(icon="folder_open", on_click=lambda: asyncio.create_task(_open_folder())) \
+                    .props("flat dense round").tooltip("Abrir carpeta...")
 
-    @ui.refreshable
-    def project_selector() -> None:
-        project_rows = memory.list_projects()
-        options = {None: "Sin proyecto"}
-        for p in project_rows:
-            options[p["id"]] = p["name"]
-        ui.select(options, value=state.active_project_id, label="Proyecto activo",
-                  on_change=lambda e: asyncio.create_task(_on_project_change(e.value))) \
-            .classes("w-full")
+        project_selector()
+        refs_holder["refresh_project_selector"] = project_selector.refresh
 
-    project_selector()
+        async def _on_project_change(project_id: int | None) -> None:
+            state.active_project_id = project_id
+            await _apply_active_project_scope(state)
+            await start_new_conversation(state, _effective_agent(state))
+            refs = refs_holder["refs"]
+            render_chat_history(state, refs.chat_container)
+            render_explorer(state, refs)
+            render_canvas(state, refs)
+            refs_holder["refresh_history"]()
+            folder_caption.refresh()
 
-    async def _on_project_change(project_id: int | None) -> None:
-        state.active_project_id = project_id
-        await _apply_active_project_scope(state)
-        await start_new_conversation(state, _effective_agent(state))
-        refs = refs_holder["refs"]
-        render_chat_history(state, refs.chat_container)
-        render_explorer(state, refs)
-        render_canvas(state, refs)
-        history_panel.refresh()
-        folder_caption.refresh()
+        async def _open_folder() -> None:
+            result = await app.native.main_window.create_file_dialog(dialog_type=webview.FileDialog.FOLDER)
+            if not result:
+                return
+            path = result[0] if isinstance(result, (list, tuple)) else result
+            project_id = await run.io_bound(open_folder_as_project, path)
+            state.active_project_id = project_id
+            await _apply_active_project_scope(state)
+            await start_new_conversation(state, _effective_agent(state))
+            refs = refs_holder["refs"]
+            project_selector.refresh()
+            render_chat_history(state, refs.chat_container)
+            render_explorer(state, refs)
+            render_canvas(state, refs)
+            refs_holder["refresh_history"]()
+            folder_caption.refresh()
 
-    async def _open_folder() -> None:
-        result = await app.native.main_window.create_file_dialog(dialog_type=webview.FileDialog.FOLDER)
-        if not result:
-            return
-        path = result[0] if isinstance(result, (list, tuple)) else result
-        project_id = await run.io_bound(open_folder_as_project, path)
-        state.active_project_id = project_id
-        await _apply_active_project_scope(state)
-        await start_new_conversation(state, _effective_agent(state))
-        refs = refs_holder["refs"]
-        project_selector.refresh()
-        render_chat_history(state, refs.chat_container)
-        render_explorer(state, refs)
-        render_canvas(state, refs)
-        history_panel.refresh()
-        folder_caption.refresh()
+        @ui.refreshable
+        def folder_caption() -> None:
+            project = _active_project_row(state)
+            if project and project["folder_path"]:
+                ui.label(project["folder_path"]).classes("lechu-timestamp break-all")
 
-    ui.button("📂 Abrir carpeta...", on_click=_open_folder).classes("w-full")
+        folder_caption()
+        refs_holder["refresh_folder_caption"] = folder_caption.refresh
 
-    @ui.refreshable
-    def folder_caption() -> None:
-        project = _active_project_row(state)
-        if project and project["folder_path"]:
-            ui.label(f"📁 {project['folder_path']}").classes("text-caption text-gray-500 break-all")
+        async def _on_agent_change(agent_id: str) -> None:
+            state.agent_id = agent_id
+            state.active_model = agents[agent_id].model
+            await start_new_conversation(state, _effective_agent(state))
+            refs = refs_holder["refs"]
+            render_chat_history(state, refs.chat_container)
+            refs_holder["refresh_history"]()
+            model_select.value = state.active_model
 
-    folder_caption()
+        ui.select({aid: a.name for aid, a in agents.items()}, value=state.agent_id, label="Agente",
+                  on_change=lambda e: asyncio.create_task(_on_agent_change(e.value))) \
+            .props("dense outlined options-dense").classes("w-full")
 
-    ui.separator()
-    ui.label("Agente").classes("font-bold")
+        def _on_model_change(model: str) -> None:
+            state.active_model = model
 
-    async def _on_agent_change(agent_id: str) -> None:
-        state.agent_id = agent_id
-        state.active_model = agents[agent_id].model
-        await start_new_conversation(state, _effective_agent(state))
-        refs = refs_holder["refs"]
-        render_chat_history(state, refs.chat_container)
-        history_panel.refresh()
-        model_select.value = state.active_model
+        model_options = available_models if available_models else [state.active_model]
+        model_select = ui.select(model_options, value=state.active_model, label="Modelo",
+                                  on_change=lambda e: _on_model_change(e.value)) \
+            .props("dense outlined options-dense").classes("w-full")
+        if not available_models:
+            ui.label(f"No se pudo conectar con Ollama en {CONFIG.ollama_base_url}.").classes("text-red text-caption")
 
-    ui.select({aid: a.name for aid, a in agents.items()}, value=state.agent_id,
-              on_change=lambda e: asyncio.create_task(_on_agent_change(e.value))).classes("w-full")
+    # --- tabs: Chats | Archivos ---
+    with ui.tabs().classes("w-full") as sidebar_tabs:
+        ui.tab("chats", label="Chats", icon="chat")
+        ui.tab("archivos", label="Archivos", icon="folder")
 
-    def _on_model_change(model: str) -> None:
-        state.active_model = model
+    files_container_holder: dict = {}
+    with ui.tab_panels(sidebar_tabs, value="chats").classes("w-full flex-grow").style("overflow: hidden"):
+        with ui.tab_panel("chats").classes("h-full overflow-auto q-pa-xs"):
+            render_chats_tab(state, agents, refs_holder)
+        with ui.tab_panel("archivos").classes("h-full overflow-auto q-pa-none"):
+            files_container_holder["container"] = ui.column().classes("w-full h-full")
 
-    model_options = available_models if available_models else [state.active_model]
-    model_select = ui.select(model_options, value=state.active_model,
-                              on_change=lambda e: _on_model_change(e.value)).classes("w-full")
-    if not available_models:
-        ui.label(f"No se pudo conectar con Ollama en {CONFIG.ollama_base_url}.").classes("text-red text-caption")
+    # --- footer: fixed, not scrolling ---
+    with ui.row().classes("w-full items-center q-pa-sm").style("border-top: 1px solid var(--border)"):
+        ui.button("Configuración", icon="settings",
+                  on_click=lambda: _open_settings_dialog(state, agents, refs_holder)) \
+            .props("flat align=left").classes("w-full justify-start")
+
+    return files_container_holder["container"]
+
+
+def render_chats_tab(state: AppState, agents: dict[str, Agent], refs_holder: dict) -> None:
+    search_state = {"query": ""}
 
     async def _new_conversation() -> None:
         await start_new_conversation(state, _effective_agent(state))
@@ -840,156 +1117,297 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         render_canvas(state, refs)
         history_panel.refresh()
 
-    ui.button("Nueva conversación", on_click=_new_conversation).classes("w-full")
+    ui.button("Nueva conversación", icon="add", on_click=_new_conversation) \
+        .props("outline dense").classes("w-full q-mb-xs text-caption")
 
-    ui.separator()
-    with ui.expansion("Historial", value=True).classes("w-full"):
-        @ui.refreshable
-        def history_panel() -> None:
-            conversations = memory.list_conversations(state.active_project_id)
-            if not conversations:
-                ui.label("Sin conversaciones todavía en este proyecto.").classes("text-caption text-gray-500")
-                return
-            for conv in conversations:
-                label = conv["title"] or f"Conversación #{conv['id']} ({conv['agent_id']})"
-                ui.button(label, on_click=lambda c=conv: asyncio.create_task(_load_history(c))) \
-                    .props("flat align=left").classes("w-full justify-start")
+    search_input = ui.input(placeholder="Buscar conversaciones...") \
+        .props("dense borderless").classes("w-full lechu-search")
+    with search_input.add_slot("prepend"):
+        ui.icon("search").classes("text-sm")
 
-        async def _load_history(conv_row: sqlite3.Row) -> None:
-            await load_conversation(state, conv_row, agents)
-            refs = refs_holder["refs"]
-            render_chat_history(state, refs.chat_container)
-            render_explorer(state, refs)
-            render_canvas(state, refs)
-            project_selector.refresh()
-            folder_caption.refresh()
-            history_panel.refresh()
+    def _on_chats_search_change(e) -> None:
+        search_state["query"] = (e.value or "").strip().lower()
+        history_panel.refresh()
 
-        history_panel()
+    search_input.on_value_change(_on_chats_search_change)
 
-    with ui.expansion("Memoria").classes("w-full"):
-        @ui.refreshable
-        def memory_panel() -> None:
-            facts = memory.recall_facts()
-            if facts:
-                rows = [{"category": f["category"], "key": f["key"], "value": f["value"]} for f in facts]
-                columns = [
-                    {"name": "category", "label": "Categoría", "field": "category"},
-                    {"name": "key", "label": "Clave", "field": "key"},
-                    {"name": "value", "label": "Valor", "field": "value"},
-                ]
-                ui.table(rows=rows, columns=columns, row_key="key").classes("w-full")
-            else:
-                ui.label("Todavía no hay hechos guardados.").classes("text-caption text-gray-500")
+    @ui.refreshable
+    def history_panel() -> None:
+        conversations = memory.list_conversations(state.active_project_id)
+        query = search_state["query"]
+        if query:
+            conversations = [c for c in conversations if query in (c["title"] or "").lower()]
+        if not conversations:
+            msg = "Sin resultados." if query else "Sin conversaciones todavía en este proyecto."
+            ui.label(msg).classes("text-caption text-gray-500 q-pa-sm")
+            return
 
-            cat_input = ui.input("Categoría")
-            key_input = ui.input("Clave")
-            val_input = ui.input("Valor")
+        today_local = datetime.now().astimezone().date()
+        buckets: dict[str, list] = {b: [] for b in _BUCKET_ORDER}
+        for conv in conversations:
+            dt_local = _to_local_dt(conv["updated_at"])
+            buckets[_bucket_for(dt_local, today_local)].append((conv, dt_local))
 
-            def _add_fact() -> None:
-                if cat_input.value and key_input.value and val_input.value:
-                    memory.remember_fact(cat_input.value, key_input.value, val_input.value, source="user")
-                    cat_input.value = ""
-                    key_input.value = ""
-                    val_input.value = ""
-                    memory_panel.refresh()
+        for bucket in _BUCKET_ORDER:
+            items = buckets[bucket]
+            if not items:
+                continue
+            ui.label(bucket).classes("lechu-section-label q-mt-sm q-mb-xs")
+            for conv, dt_local in items:
+                label = conv["title"] or f"Conversación #{conv['id']}"
+                ts = _format_timestamp(dt_local, bucket)
+                is_active = conv["id"] == state.conversation_id
+                classes = "lechu-list-item w-full" + (" lechu-list-item--active" if is_active else "")
+                with ui.row().classes(classes).on(
+                    "click", lambda c=conv: asyncio.create_task(_load_history(c))
+                ):
+                    ui.label(label).classes("ellipsis col-grow")
+                    ui.label(ts).classes("lechu-timestamp")
 
-            ui.button("Guardar", on_click=_add_fact)
+    async def _load_history(conv_row: sqlite3.Row) -> None:
+        await load_conversation(state, conv_row, agents)
+        refs = refs_holder["refs"]
+        render_chat_history(state, refs.chat_container)
+        render_explorer(state, refs)
+        render_canvas(state, refs)
+        refs_holder["refresh_project_selector"]()
+        refs_holder["refresh_folder_caption"]()
+        history_panel.refresh()
 
-            if facts:
-                del_options = {f["id"]: f"{f['category']}/{f['key']}" for f in facts}
-                del_select = ui.select(del_options, label="Borrar hecho")
+    history_panel()
+    refs_holder["refresh_history"] = history_panel.refresh
 
-                def _delete_fact() -> None:
-                    if del_select.value is not None:
-                        memory.delete_fact(del_select.value)
-                        memory_panel.refresh()
 
-                ui.button("Borrar hecho", on_click=_delete_fact)
+def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder: dict) -> None:
+    with ui.dialog() as dialog, ui.card().classes("w-[560px] max-w-[92vw] max-h-[85vh] overflow-y-auto gap-2"):
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label("Configuración").classes("text-lg font-bold")
+            ui.button(icon="close", on_click=dialog.close).props("flat dense round")
 
-        memory_panel()
+        with ui.expansion("Apariencia", value=True).classes("w-full"):
+            theme_is_dark = memory.get_setting("theme", "light") == "dark"
+            dark_mode_el = ui.dark_mode(value=theme_is_dark)
 
-    with ui.expansion("Skills").classes("w-full"):
-        @ui.refreshable
-        def skills_panel() -> None:
-            for skill in state.skills:
-                ui.label(f"{skill.name} — {skill.description}").classes("text-sm")
+            async def _on_theme_change(value: bool) -> None:
+                await run.io_bound(memory.set_setting, "theme", "dark" if value else "light")
 
-            def _reload_skills() -> None:
-                state.skills = load_skills(SKILLS_DIR)
-                skills_panel.refresh()
-
-            ui.button("Recargar skills", on_click=_reload_skills)
-
-        skills_panel()
-
-    with ui.expansion("⚙️ Settings").classes("w-full"):
-        ui.label("Apariencia").classes("font-bold text-sm")
-
-        theme_is_dark = memory.get_setting("theme", "light") == "dark"
-        dark_mode_el = ui.dark_mode(value=theme_is_dark)
-
-        async def _on_theme_change(value: bool) -> None:
-            await run.io_bound(memory.set_setting, "theme", "dark" if value else "light")
-
-        ui.switch(
-            "Tema oscuro",
-            value=theme_is_dark,
-            on_change=lambda e: (dark_mode_el.set_value(e.value), asyncio.create_task(_on_theme_change(e.value))),
-        )
-
-        def _apply_font_size(size: str) -> None:
-            ui.query("body").classes(
-                remove="lechu-font-small lechu-font-medium lechu-font-large",
-                add=f"lechu-font-{size}",
+            ui.switch(
+                "Tema oscuro",
+                value=theme_is_dark,
+                on_change=lambda e: (dark_mode_el.set_value(e.value), asyncio.create_task(_on_theme_change(e.value))),
             )
 
-        async def _on_font_change(e) -> None:
-            _apply_font_size(e.value)
-            await run.io_bound(memory.set_setting, "font_size", e.value)
+            def _apply_font_size(size: str) -> None:
+                ui.query("body").classes(
+                    remove="lechu-font-small lechu-font-medium lechu-font-large",
+                    add=f"lechu-font-{size}",
+                )
 
-        ui.select(
-            {"small": "Chico", "medium": "Mediano", "large": "Grande"},
-            value=memory.get_setting("font_size", "medium"),
-            label="Tamaño de letra",
-            on_change=_on_font_change,
-        ).classes("w-full")
+            async def _on_font_change(e) -> None:
+                _apply_font_size(e.value)
+                await run.io_bound(memory.set_setting, "font_size", e.value)
 
-        async def _on_wiggle_change(e) -> None:
-            ui.query("body").classes(add="lechu-wiggle-on" if e.value else "", remove="" if e.value else "lechu-wiggle-on")
-            await run.io_bound(memory.set_setting, "wiggle", "on" if e.value else "off")
+            ui.select(
+                {"small": "Chico", "medium": "Mediano", "large": "Grande"},
+                value=memory.get_setting("font_size", "medium"),
+                label="Tamaño de letra",
+                on_change=_on_font_change,
+            ).classes("w-full")
 
-        ui.switch(
-            "Animación de la lechuza al pensar",
-            value=memory.get_setting("wiggle", "on") == "on",
-            on_change=_on_wiggle_change,
-        )
+            async def _on_wiggle_change(e) -> None:
+                ui.query("body").classes(
+                    add="lechu-wiggle-on" if e.value else "", remove="" if e.value else "lechu-wiggle-on"
+                )
+                await run.io_bound(memory.set_setting, "wiggle", "on" if e.value else "off")
 
-        ui.separator()
-        ui.label("Carpetas habilitadas").classes("font-bold text-sm")
-        ui.label("Carpetas por defecto (sin proyecto abierto) donde Lechu puede leer/escribir.") \
-            .classes("text-caption text-gray-500")
+            ui.switch(
+                "Animación de la lechuza al pensar",
+                value=memory.get_setting("wiggle", "on") == "on",
+                on_change=_on_wiggle_change,
+            )
 
-        @ui.refreshable
-        def folders_panel() -> None:
-            for folder in CONFIG.filesystem.whitelisted_folders:
-                with ui.row().classes("items-center justify-between w-full"):
-                    ui.label(str(folder)).classes("text-caption")
-                    ui.button(
-                        icon="delete", on_click=lambda f=folder: (remove_whitelisted_folder(str(f)), folders_panel.refresh()),
-                    ).props("flat dense round color=red")
+        with ui.expansion("Carpetas habilitadas").classes("w-full"):
+            ui.label("Carpetas por defecto (sin proyecto abierto) donde Lechu puede leer/escribir.") \
+                .classes("text-caption text-gray-500")
 
-        folders_panel()
+            @ui.refreshable
+            def folders_panel() -> None:
+                for folder in CONFIG.filesystem.whitelisted_folders:
+                    with ui.row().classes("items-center justify-between w-full"):
+                        ui.label(str(folder)).classes("text-caption")
+                        ui.button(
+                            icon="delete",
+                            on_click=lambda f=folder: (remove_whitelisted_folder(str(f)), folders_panel.refresh()),
+                        ).props("flat dense round color=red")
 
-        async def _add_folder() -> None:
-            result = await app.native.main_window.create_file_dialog(dialog_type=webview.FileDialog.FOLDER)
-            if not result:
-                return
-            path = result[0] if isinstance(result, (list, tuple)) else result
-            await run.io_bound(add_whitelisted_folder, path)
-            folders_panel.refresh()
+            folders_panel()
 
-        ui.button("+ Agregar carpeta", on_click=_add_folder).classes("w-full")
+            async def _add_folder() -> None:
+                result = await app.native.main_window.create_file_dialog(dialog_type=webview.FileDialog.FOLDER)
+                if not result:
+                    return
+                path = result[0] if isinstance(result, (list, tuple)) else result
+                await run.io_bound(add_whitelisted_folder, path)
+                folders_panel.refresh()
+
+            ui.button("+ Agregar carpeta", on_click=_add_folder).classes("w-full")
+
+        with ui.expansion("Memoria").classes("w-full"):
+            @ui.refreshable
+            def memory_panel() -> None:
+                facts = memory.recall_facts()
+                if facts:
+                    rows = [{"category": f["category"], "key": f["key"], "value": f["value"]} for f in facts]
+                    columns = [
+                        {"name": "category", "label": "Categoría", "field": "category"},
+                        {"name": "key", "label": "Clave", "field": "key"},
+                        {"name": "value", "label": "Valor", "field": "value"},
+                    ]
+                    ui.table(rows=rows, columns=columns, row_key="key").classes("w-full")
+                else:
+                    ui.label("Todavía no hay hechos guardados.").classes("text-caption text-gray-500")
+
+                cat_input = ui.input("Categoría")
+                key_input = ui.input("Clave")
+                val_input = ui.input("Valor")
+
+                def _add_fact() -> None:
+                    if cat_input.value and key_input.value and val_input.value:
+                        memory.remember_fact(cat_input.value, key_input.value, val_input.value, source="user")
+                        cat_input.value = ""
+                        key_input.value = ""
+                        val_input.value = ""
+                        memory_panel.refresh()
+
+                ui.button("Guardar", on_click=_add_fact)
+
+                if facts:
+                    del_options = {f["id"]: f"{f['category']}/{f['key']}" for f in facts}
+                    del_select = ui.select(del_options, label="Borrar hecho")
+
+                    def _delete_fact() -> None:
+                        if del_select.value is not None:
+                            memory.delete_fact(del_select.value)
+                            memory_panel.refresh()
+
+                    ui.button("Borrar hecho", on_click=_delete_fact)
+
+            memory_panel()
+
+        with ui.expansion("Skills").classes("w-full"):
+            @ui.refreshable
+            def skills_panel() -> None:
+                for skill in state.skills:
+                    ui.label(f"{skill.name} — {skill.description}").classes("text-sm")
+
+                def _reload_skills() -> None:
+                    state.skills = load_skills(SKILLS_DIR)
+                    skills_panel.refresh()
+
+                ui.button("Recargar skills", on_click=_reload_skills)
+
+            skills_panel()
+
+        with ui.expansion("Conexiones").classes("w-full"):
+            ui.label("Clima").classes("font-bold text-sm")
+            ui.label("Activo vía Open-Meteo — no requiere configuración.") \
+                .classes("text-caption text-gray-500")
+
+            ui.separator()
+            ui.label("Maps").classes("font-bold text-sm")
+            ui.label("Distancias y direcciones vía OpenRouteService.") \
+                .classes("text-caption text-gray-500")
+
+            @ui.refreshable
+            def maps_panel() -> None:
+                has_key = get_secret(maps_tools.SECRET_KEY) is not None
+                ui.label("🔑 API key configurada" if has_key else "Sin configurar").classes("text-caption")
+
+                key_input = ui.input(placeholder="Pegá tu API key de OpenRouteService...") \
+                    .props("type=password dense").classes("w-full")
+
+                def _save_key() -> None:
+                    if key_input.value:
+                        set_secret(maps_tools.SECRET_KEY, key_input.value)
+                        key_input.value = ""
+                        maps_panel.refresh()
+                        ui.notify("API key guardada", type="positive")
+
+                def _remove_key() -> None:
+                    delete_secret(maps_tools.SECRET_KEY)
+                    maps_panel.refresh()
+                    ui.notify("API key eliminada", type="positive")
+
+                async def _test_key() -> None:
+                    ok = await run.io_bound(maps_tools.test_connection)
+                    ui.notify(
+                        "✅ Conexión OK" if ok else "❌ No se pudo validar la conexión (¿guardaste una key válida?)",
+                        type="positive" if ok else "negative",
+                    )
+
+                with ui.row().classes("w-full items-center"):
+                    ui.button("Guardar", on_click=_save_key).props("dense")
+                    ui.button("Probar conexión", on_click=lambda: asyncio.create_task(_test_key())).props("dense outline")
+                    if has_key:
+                        ui.button("Quitar", on_click=_remove_key).props("dense outline color=red")
+
+            maps_panel()
+
+            ui.separator()
+            ui.label("Google (Gmail, Drive, Calendar)").classes("font-bold text-sm")
+            ui.label("Lectura y escritura con permiso, vía OAuth de Google.") \
+                .classes("text-caption text-gray-500")
+
+            @ui.refreshable
+            def google_panel() -> None:
+                connected_email = google_auth.get_connected_email()
+                has_config = google_auth.has_client_config()
+
+                if connected_email:
+                    ui.label(f"✅ Conectado como {connected_email}").classes("text-caption")
+                elif has_config:
+                    ui.label("Credenciales guardadas, todavía no conectado.").classes("text-caption")
+                else:
+                    ui.label("Sin configurar").classes("text-caption")
+
+                client_id_input = ui.input(placeholder="Client ID de Google Cloud") \
+                    .props("dense").classes("w-full")
+                client_secret_input = ui.input(placeholder="Client Secret de Google Cloud") \
+                    .props("type=password dense").classes("w-full")
+
+                def _save_client_config() -> None:
+                    if client_id_input.value and client_secret_input.value:
+                        google_auth.save_client_config(client_id_input.value, client_secret_input.value)
+                        client_id_input.value = ""
+                        client_secret_input.value = ""
+                        google_panel.refresh()
+                        ui.notify("Credenciales de Google guardadas", type="positive")
+
+                async def _connect() -> None:
+                    try:
+                        email = await run.io_bound(google_auth.run_oauth_flow)
+                    except Exception as e:
+                        ui.notify(f"No se pudo conectar: {e}", type="negative")
+                        return
+                    google_panel.refresh()
+                    ui.notify(f"Conectado como {email}", type="positive")
+
+                def _disconnect() -> None:
+                    google_auth.disconnect()
+                    google_panel.refresh()
+                    ui.notify("Desconectado de Google", type="positive")
+
+                with ui.row().classes("w-full items-center"):
+                    ui.button("Guardar credenciales", on_click=_save_client_config).props("dense")
+                    connect_btn = ui.button(
+                        "Conectar con Google", on_click=lambda: asyncio.create_task(_connect())
+                    ).props("dense outline")
+                    if not has_config:
+                        connect_btn.props("disable")
+                    if connected_email:
+                        ui.button("Desconectar", on_click=_disconnect).props("dense outline color=red")
+
+            google_panel()
 
         ui.separator()
         ui.label("Zona de peligro").classes("font-bold text-sm text-red")
@@ -1006,11 +1424,13 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
                 refs = refs_holder["refs"]
                 await start_new_conversation(state, _effective_agent(state))
                 render_chat_history(state, refs.chat_container)
-                history_panel.refresh()
+                refs_holder["refresh_history"]()
                 ui.notify("Conversaciones borradas", type="positive")
 
         ui.button("Borrar todos los hechos", on_click=_reset_facts).props("outline color=red").classes("w-full")
         ui.button("Borrar todas las conversaciones", on_click=_reset_conversations).props("outline color=red").classes("w-full")
+
+    dialog.open()
 
 
 def main() -> None:

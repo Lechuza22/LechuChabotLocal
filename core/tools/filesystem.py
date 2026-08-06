@@ -117,6 +117,15 @@ def delete_file(path: str) -> dict:
     return {"path": str(target), "deleted": True}
 
 
+def create_folder(path: str) -> dict:
+    """UI-only helper (Explorer's "nueva carpeta" button) - not registered as
+    an LLM tool, that would let the agent create folders autonomously, which
+    is a separate decision from this one."""
+    target = _resolve_and_validate(path)
+    target.mkdir(parents=True, exist_ok=True)
+    return {"path": str(target), "created": True}
+
+
 register(Tool(
     name="list_dir",
     description="List files and subdirectories inside a whitelisted folder.",

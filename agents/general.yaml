@@ -3,6 +3,11 @@
 # instead) while qwen3:8b reliably does (5/5) - see commit history for the
 # empirical comparison. Switch back to mistral per-conversation via the
 # sidebar's model selector if you don't need tool use.
+#
+# get_weather/get_directions bring this to 9 tools - one step further than
+# the 7-tool case that was actually measured. Not yet verified whether
+# qwen3:8b's reliability holds at this count; if it visibly degrades, split
+# these two into a lighter dedicated agent instead of growing this one.
 id: general
 name: "Asistente general"
 model: qwen3:8b
@@ -17,3 +22,5 @@ tools:
   - remember_fact
   - recall_facts
   - get_current_time
+  - get_weather
+  - get_directions

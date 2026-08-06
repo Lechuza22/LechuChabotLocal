@@ -1,0 +1,27 @@
+# Agente dedicado en vez de sumar estos tools a general.yaml: el hallazgo de
+# fiabilidad de esta sesión es que la cantidad de tools es el factor
+# dominante en si qwen3:8b realmente invoca una tool o alucina - 9 tools ya
+# está verificado como confiable (ver general.yaml), pero sumar los 8 tools
+# de Gmail/Drive/Calendar a los 9 que ya tiene general.yaml (17 en total) es
+# territorio no probado. Separarlos mantiene cada agente en el rango
+# verificado.
+id: google
+name: "Asistente de Google"
+model: qwen3:8b
+system_prompt: |
+  You are Lechu, a helpful local assistant running fully offline via Ollama,
+  connected to the user's Gmail, Google Drive, and Google Calendar. Always
+  reply in the same language the user writes in. Before sending an email,
+  writing/overwriting a Drive file, or creating/updating/deleting a calendar
+  event, briefly explain what you're about to do - the user will be asked to
+  confirm those actions separately.
+tools:
+  - search_emails
+  - read_email
+  - send_email
+  - search_drive_files
+  - read_drive_file
+  - write_drive_file
+  - list_calendar_events
+  - manage_calendar_event
+  - get_current_time
