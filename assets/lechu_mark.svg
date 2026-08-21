@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 100 100" width="1024" height="1024" xmlns="http://www.w3.org/2000/svg">
-    <ellipse cx="22" cy="64" rx="11" ry="27" transform="rotate(-10 22 64)" fill="#7a4a29"></ellipse>
-    <ellipse cx="78" cy="64" rx="11" ry="27" transform="rotate(10 78 64)" fill="#7a4a29"></ellipse>
-    <path d="M 50 18 C 29 18 18 37 18 58 C 18 80 32 97 50 97 C 68 97 82 80 82 58 C 82 37 71 18 50 18 Z" fill="#a5693a"></path>
-    <polygon points="27,26 35,4 42,28" fill="#a5693a"></polygon>
-    <polygon points="73,26 65,4 58,28" fill="#a5693a"></polygon>
-    <circle cx="50" cy="42" r="27" fill="#c98f52"></circle>
-    <circle cx="34" cy="40" r="10" fill="#a5693a" stroke="#e8a33d" stroke-width="3"></circle>
-    <circle cx="66" cy="40" r="10" fill="#a5693a" stroke="#e8a33d" stroke-width="3"></circle>
-    <circle cx="34" cy="40" r="4" fill="#e8a33d"></circle>
-    <circle cx="66" cy="40" r="4" fill="#e8a33d"></circle>
-    <polygon points="50,48 46,56 54,56" fill="#e8a33d"></polygon>
-  </svg>
+  <ellipse cx="22" cy="64" rx="11" ry="27" transform="rotate(-10 22 64)" fill="#774c2a"/>
+  <ellipse cx="78" cy="64" rx="11" ry="27" transform="rotate(10 78 64)" fill="#774c2a"/>
+  <path d="M 50 18 C 29 18 18 37 18 58 C 18 80 32 97 50 97 C 68 97 82 80 82 58 C 82 37 71 18 50 18 Z" fill="#a5693a"/>
+  <polygon points="27,26 35,4 42,28" fill="#a5693a"/>
+  <polygon points="73,26 65,4 58,28" fill="#a5693a"/>
+  <circle cx="50" cy="42" r="27" fill="#c29979"/>
+  <polygon points="50,80 42,72 58,72" fill="#c29979"/>
+  <polygon points="50,90 43,83 57,83" fill="#c29979" opacity="0.8"/>
+  <polygon points="40,95 45,99 34,99" fill="#633f23"/>
+  <polygon points="60,95 55,99 66,99" fill="#633f23"/>
+  <circle cx="34" cy="40" r="10" fill="#a5693a" stroke="#34363c" stroke-width="3"/>
+  <circle cx="66" cy="40" r="10" fill="#a5693a" stroke="#34363c" stroke-width="3"/>
+  <circle cx="34" cy="40" r="4" fill="#34363c"/>
+  <circle cx="66" cy="40" r="4" fill="#34363c"/>
+  <circle cx="35.5" cy="38.5" r="1.4" fill="#c29979"/>
+  <circle cx="67.5" cy="38.5" r="1.4" fill="#c29979"/>
+  <polygon points="50,48 46,56 54,56" fill="#34363c"/>
+</svg>

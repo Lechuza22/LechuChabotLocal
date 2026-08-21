@@ -195,7 +195,8 @@ class AppState:
     conversation_id: int | None = None
     messages: list[dict] = field(default_factory=list)
     skills: list[Skill] = field(default_factory=list)
-    canvas: dict | None = None
+    open_docs: list[dict] = field(default_factory=list)
+    active_doc_path: str | None = None
     title_set: bool = False
     current_turn_task: Optional[asyncio.Task] = None
 
@@ -280,7 +281,8 @@ async def start_new_conversation(state: AppState, agent: Agent) -> None:
     state.conversation_id = conv_id
     state.messages = [{"role": "system", "content": agent.system_prompt}]
     state.title_set = False
-    state.canvas = None
+    state.open_docs = []
+    state.active_doc_path = None
 
 
 async def load_conversation(state: AppState, conv_row: sqlite3.Row, agents: dict[str, Agent]) -> None:
@@ -290,7 +292,8 @@ async def load_conversation(state: AppState, conv_row: sqlite3.Row, agents: dict
     state.active_project_id = conv_row["project_id"]
     state.messages = await run.io_bound(memory.get_conversation_messages, conv_row["id"])
     state.title_set = True
-    state.canvas = None
+    state.open_docs = []
+    state.active_doc_path = None
     await _apply_active_project_scope(state)
 
 
@@ -360,6 +363,9 @@ def _parse_excel(raw: bytes) -> list[dict]:
 
 
 def _load_into_canvas(state: AppState, path: str) -> None:
+    """Loads (or refreshes, if already open) `path` into state.open_docs and makes it
+    the active tab - never replaces other open docs, unlike the single-slot canvas this
+    replaced."""
     ext = Path(path).suffix.lower()
     try:
         if ext in _IMAGE_EXTS or ext in _PDF_EXTS:
@@ -367,18 +373,27 @@ def _load_into_canvas(state: AppState, path: str) -> None:
             mime = _MIME_BY_EXT.get(ext, "application/octet-stream")
             data_uri = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
             kind = "pdf" if ext in _PDF_EXTS else "image"
-            state.canvas = {"path": path, "kind": kind, "data_uri": data_uri}
+            doc = {"path": path, "kind": kind, "data_uri": data_uri}
         elif ext in _EXCEL_EXTS:
             raw = read_file_bytes(path)
-            state.canvas = {"path": path, "kind": "excel", "rows": _parse_excel(raw)}
+            doc = {"path": path, "kind": "excel", "rows": _parse_excel(raw)}
         else:
             fresh = read_file(path)
-            state.canvas = {"path": path, "kind": "text", "content": fresh["content"]}
+            doc = {"path": path, "kind": "text", "content": fresh["content"]}
     except Exception as e:
-        state.canvas = {"path": path, "kind": "error", "error": str(e)}
+        doc = {"path": path, "kind": "error", "error": str(e)}
+
+    existing_idx = next((i for i, d in enumerate(state.open_docs) if d["path"] == path), None)
+    if existing_idx is not None:
+        state.open_docs[existing_idx] = doc
+    else:
+        state.open_docs.append(doc)
+    state.active_doc_path = path
 
 
-def _scan_for_canvas_update(state: AppState, messages: list[dict], start_index: int) -> None:
+def _scan_for_canvas_update(state: AppState, messages: list[dict], start_index: int) -> bool:
+    """Returns True if a doc was (re)loaded, so the caller knows to reveal the panel."""
+    loaded = False
     for msg in messages[start_index:]:
         if msg.get("role") != "tool":
             continue
@@ -392,40 +407,82 @@ def _scan_for_canvas_update(state: AppState, messages: list[dict], start_index: 
         path = result.get("path")
         if path and "error" not in result:
             _load_into_canvas(state, path)
+            loaded = True
+    return loaded
+
+
+def _reveal_canvas(refs: UIRefs) -> None:
+    """Forces the panel open - called only from the explicit "open a doc" actions
+    (chat tool result, tree click, recent-doc click), never from a routine
+    re-render, so it doesn't fight a manual collapse while docs stay open."""
+    refs.content_splitter.value = _CANVAS_EXPANDED
+
+
+def _switch_doc(state: AppState, refs: UIRefs, path: str) -> None:
+    state.active_doc_path = path
+    render_canvas(state, refs)
+
+
+def _close_doc(state: AppState, refs: UIRefs, path: str) -> None:
+    state.open_docs = [d for d in state.open_docs if d["path"] != path]
+    if state.active_doc_path == path:
+        state.active_doc_path = state.open_docs[-1]["path"] if state.open_docs else None
+    render_canvas(state, refs)
 
 
 def render_canvas(state: AppState, refs: UIRefs) -> None:
     container = refs.canvas_container
     container.clear()
+
+    # Empty is always collapsed - but non-empty is left alone here (not forced
+    # open), so a manual collapse while docs stay open survives routine
+    # re-renders. Opening/switching to a doc explicitly calls _reveal_canvas.
+    if not state.open_docs:
+        refs.content_splitter.value = _CANVAS_COLLAPSED
+
     with container:
         with ui.row().classes("items-center justify-between w-full"):
-            ui.label("📄 Documentos").classes("text-lg font-bold")
+            ui.label("Documentos").classes("text-lg font-bold")
             ui.button(icon="keyboard_double_arrow_right", on_click=lambda: _toggle_canvas(refs)) \
                 .props("flat dense round").tooltip("Mostrar/ocultar Documentos")
 
         docs = memory.list_project_documents(state.active_project_id)
         if docs:
-            with ui.expansion("Recientes en este proyecto", value=state.canvas is None).classes("w-full"):
+            with ui.expansion("Recientes en este proyecto", value=not state.open_docs).classes("w-full"):
                 for path in docs:
                     ui.button(
                         Path(path).name,
                         on_click=lambda p=path: asyncio.create_task(_open_recent_doc(state, refs, p)),
                     ).props("flat align=left").classes("w-full justify-start")
 
-        canvas = state.canvas
-        if not canvas:
+        if not state.open_docs:
             ui.label("Acá vas a ver los archivos que Lechu lea o escriba durante la conversación.") \
                 .classes("text-caption text-gray-500")
             return
 
-        ui.label(canvas["path"]).classes("text-caption text-gray-500")
-        kind = canvas.get("kind", "text")
+        with ui.row().classes("lechu-doc-tabs w-full no-wrap gap-0"):
+            for doc in state.open_docs:
+                path = doc["path"]
+                is_active = path == state.active_doc_path
+                classes = "lechu-doc-tab" + (" lechu-doc-tab--active" if is_active else "")
+                with ui.row().classes(classes).style("width: auto"):
+                    ui.label(Path(path).name).classes("cursor-pointer").tooltip(path) \
+                        .on("click", lambda p=path: _switch_doc(state, refs, p))
+                    ui.icon("close", size="14px").classes("lechu-doc-tab-close cursor-pointer") \
+                        .on("click", lambda p=path: _close_doc(state, refs, p))
+
+        active = next((d for d in state.open_docs if d["path"] == state.active_doc_path), None)
+        if active is None:
+            return
+
+        ui.label(active["path"]).classes("text-caption text-gray-500")
+        kind = active.get("kind", "text")
         if kind == "error":
-            ui.label(canvas["error"]).classes("text-red")
+            ui.label(active["error"]).classes("text-red")
             return
 
         if kind == "image":
-            ui.image(canvas["data_uri"]).classes("w-full")
+            ui.image(active["data_uri"]).classes("w-full")
         elif kind == "pdf":
             # sanitize=False: ui.html defaults to client-side DOMPurify sanitization,
             # which silently strips <embed> (not in its allowed-tags list) - the
@@ -433,20 +490,20 @@ def render_canvas(state: AppState, refs: UIRefs) -> None:
             # #view=FitH: Chromium's built-in PDF viewer otherwise opens at a fixed
             # zoom level instead of filling the available width.
             ui.html(
-                f'<embed src="{canvas["data_uri"]}#view=FitH" type="application/pdf" '
+                f'<embed src="{active["data_uri"]}#view=FitH" type="application/pdf" '
                 'style="width:100%; height:calc(100vh - 220px); border:none;" />',
                 sanitize=False,
             ).classes("w-full")
         elif kind == "excel":
-            rows = canvas["rows"]
+            rows = active["rows"]
             if rows:
                 columns = [{"name": k, "label": k, "field": k} for k in rows[0].keys()]
                 ui.table(rows=rows, columns=columns, row_key=list(rows[0].keys())[0]).classes("w-full")
             else:
                 ui.label("(Excel vacío)")
         else:
-            content = canvas["content"]
-            ext = Path(canvas["path"]).suffix.lower()
+            content = active["content"]
+            ext = Path(active["path"]).suffix.lower()
             if ext in (".csv", ".tsv"):
                 delimiter = "," if ext == ".csv" else "\t"
                 try:
@@ -467,6 +524,7 @@ def render_canvas(state: AppState, refs: UIRefs) -> None:
 async def _open_recent_doc(state: AppState, refs: UIRefs, path: str) -> None:
     await run.io_bound(_load_into_canvas, state, path)
     render_canvas(state, refs)
+    _reveal_canvas(refs)
 
 
 # --- explorer (file tree) -----------------------------------------------------
@@ -789,6 +847,13 @@ async def _advance(
                 content_started = True
             result = box["result"]
             if isinstance(result, Continue):
+                # Reveal a newly-read/written doc as soon as the tool result lands,
+                # not only once the whole turn (including the model's follow-up
+                # commentary) finishes - for a big file that commentary can take a
+                # while, and the tab shouldn't make the user wait for it too.
+                if _scan_for_canvas_update(state, state.messages, start_len):
+                    render_canvas(state, refs)
+                    _reveal_canvas(refs)
                 continue
             break
         else:
@@ -804,8 +869,10 @@ async def _advance(
             bubble.delete()
 
         await run.io_bound(persist_new_messages, state.conversation_id, state.messages, start_len)
-        _scan_for_canvas_update(state, state.messages, start_len)
+        canvas_loaded = _scan_for_canvas_update(state, state.messages, start_len)
         render_canvas(state, refs)
+        if canvas_loaded:
+            _reveal_canvas(refs)
 
         if isinstance(result, PendingConfirmation):
             tool_result = await _ask_confirmation(refs.chat_container, agent, result)
@@ -817,6 +884,7 @@ async def _advance(
             if result.tool_name in ("read_file", "write_file") and "error" not in tool_result:
                 await run.io_bound(_load_into_canvas, state, tool_result["path"])
                 render_canvas(state, refs)
+                _reveal_canvas(refs)
                 render_explorer(state, refs)
             await _advance(state, refs, agent, failed_counts)
 
@@ -1021,6 +1089,26 @@ def build_page() -> None:
             }
             .lechu-timestamp { font-size: 10px; color: var(--text-muted); }
             .lechu-list-item--active .lechu-timestamp { color: var(--bg-accent-text); opacity: 0.75; }
+
+            /* canvas panel: open-document tabs (editor-style strip, not pills) */
+            .lechu-doc-tabs {
+                display: flex; align-items: stretch; border-bottom: 1px solid var(--border);
+                overflow-x: auto; overflow-y: hidden;
+            }
+            .lechu-doc-tab {
+                display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+                padding: 6px 8px 6px 10px; font-size: 12px; white-space: nowrap;
+                color: var(--text-muted); background: var(--surface-1);
+                border-right: 1px solid var(--border);
+                border-bottom: 2px solid transparent; cursor: pointer;
+            }
+            .lechu-doc-tab:hover { color: var(--text-primary); background: var(--surface-2); }
+            .lechu-doc-tab--active {
+                color: var(--text-primary); background: var(--surface-0);
+                border-bottom: 2px solid var(--text-accent); font-weight: 600;
+            }
+            .lechu-doc-tab-close { opacity: 0.5; border-radius: 4px; }
+            .lechu-doc-tab-close:hover { opacity: 1; background: var(--surface-2); }
             .lechu-section-label {
                 font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
                 color: var(--text-muted); font-weight: 600;
@@ -1098,7 +1186,7 @@ def build_page() -> None:
         with ui.left_drawer(value=True, bordered=True).props("width=250").classes("column no-wrap") as drawer:
             files_container = render_sidebar(state, agents, available_models, refs_holder)
 
-        with ui.splitter(value=_CANVAS_EXPANDED).classes("w-full") \
+        with ui.splitter(value=_CANVAS_COLLAPSED).classes("w-full") \
                 .style("height: calc(100vh - 64px)") as content_splitter:
             with content_splitter.before:
                 with ui.column().classes("w-full h-full p-2"):
@@ -1110,6 +1198,7 @@ def build_page() -> None:
                         await start_new_conversation(state, _effective_agent(state))
                         refs = refs_holder["refs"]
                         render_chat_history(state, refs.chat_container)
+                        render_canvas(state, refs)
                         refs_holder["refresh_history"]()
                         refs_holder["model_select"].value = state.active_model
 
@@ -1657,6 +1746,7 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
                 refs = refs_holder["refs"]
                 await start_new_conversation(state, _effective_agent(state))
                 render_chat_history(state, refs.chat_container)
+                render_canvas(state, refs)
                 refs_holder["refresh_history"]()
                 ui.notify("Conversaciones borradas", type="positive")
 
@@ -1679,6 +1769,7 @@ def main() -> None:
         native=True,
         window_size=(1400, 900),
         title="Lechu",
+        favicon=str(Path(__file__).resolve().parent / "assets" / "lechu_mark.svg"),
         reload=False,
         show=True,
     )
