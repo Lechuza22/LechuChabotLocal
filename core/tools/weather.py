@@ -39,10 +39,46 @@ _WEATHER_CODES = {
 }
 
 
+_WEATHER_EMOJI = {
+    0: "☀️",
+    1: "🌤️",
+    2: "⛅",
+    3: "☁️",
+    45: "🌫️",
+    48: "🌫️",
+    51: "🌦️",
+    53: "🌦️",
+    55: "🌦️",
+    56: "🌦️",
+    57: "🌦️",
+    61: "🌧️",
+    63: "🌧️",
+    65: "🌧️",
+    66: "🌧️",
+    67: "🌧️",
+    71: "❄️",
+    73: "❄️",
+    75: "❄️",
+    77: "❄️",
+    80: "🌦️",
+    81: "🌦️",
+    82: "🌧️",
+    85: "🌨️",
+    86: "🌨️",
+    95: "⛈️",
+    96: "⛈️",
+    99: "⛈️",
+}
+
+
 def _describe(code: int | None) -> str:
     if code is None:
         return "desconocido"
     return _WEATHER_CODES.get(code, f"código {code}")
+
+
+def _emoji(code: int | None) -> str:
+    return _WEATHER_EMOJI.get(code, "🌡️")
 
 
 def get_weather(location: str) -> dict:
@@ -96,6 +132,7 @@ def get_weather(location: str) -> dict:
             "humidity_pct": current.get("relative_humidity_2m"),
             "precipitation_mm": current.get("precipitation"),
             "condition": _describe(current.get("weather_code")),
+            "emoji": _emoji(current.get("weather_code")),
             "wind_speed_kmh": current.get("wind_speed_10m"),
         },
         "forecast": forecast_days,

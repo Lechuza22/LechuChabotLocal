@@ -65,7 +65,7 @@ def _tabler_icon(category: str) -> str:
 
 
 from config import AGENTS_DIR, CONFIG, SKILLS_DIR, add_whitelisted_folder, remove_whitelisted_folder
-from core import google_auth, memory, projects
+from core import google_auth, location as location_service, memory, projects
 from core.agents import Agent, load_agents
 from core.llm import OllamaClient
 from core.router import route_agent
@@ -74,6 +74,7 @@ from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import Continue, FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
 from core.tools import maps as maps_tools
 from core.tools import websearch_tools
+from core.tools.weather import get_weather
 from core.tools.datetime_tools import get_current_time
 from core.tools.filesystem import (
     create_folder, get_active_roots, read_file, read_file_bytes, set_active_roots, write_file,
@@ -122,6 +123,40 @@ def _time_context() -> str:
 # it never actually produced, and re-issuing the identical failing tool
 # call instead of adjusting. Shared across all agents here (not duplicated
 # per agents/*.yaml) so it can't drift out of sync between them.
+def _location_context() -> str:
+    loc = location_service.get_cached_location()
+    if not loc:
+        return ""
+    place = ", ".join(p for p in (loc["city"], loc["region"], loc["country"]) if p)
+    precision = (
+        "precise, via the device's GPS/WiFi location"
+        if loc.get("source") == "gps"
+        else "approximate, via IP geolocation - may be off, especially with VPN"
+    )
+    return (
+        f"The user's device appears to be located in {place} ({precision}). Use this only "
+        "when the user refers to their current location ('acá', 'cerca mío', 'mi ubicación') "
+        "without naming a place explicitly - otherwise trust what the user says."
+    )
+
+
+_WEEKDAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+_MONTHS_ES = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+]
+
+
+def _format_header_date() -> str:
+    now = datetime.now()
+    return f"{_WEEKDAYS_ES[now.weekday()]} {now.day}, {_MONTHS_ES[now.month - 1]}"
+
+
+# Process-wide, not per-session, same reasoning as location.py's cache - this is a
+# single native window, not a multi-client web app.
+_header_weather: dict = {}
+
+
 _AGENT_GUARDRAILS = (
     "If a tool call fails or returns an error, read the message and adjust your "
     "next call - never repeat the exact same failing call again. Never claim you "
@@ -295,6 +330,11 @@ def build_system_message(agent: Agent, user_input: str, skills: list[Skill]) -> 
         )
 
     text += "\n\n" + _time_context()
+
+    location_ctx = _location_context()
+    if location_ctx:
+        text += "\n\n" + location_ctx
+
     if matched:
         text += "\n\n# Relevant skill instructions:\n" + "\n\n".join(
             f"## {s.name}\n{s.body}" for s in matched
@@ -880,6 +920,7 @@ def build_page() -> None:
     async def main_page() -> None:
         ui.colors(primary="#a5693a", secondary="#e8a33d", accent="#c98f52")
         ui.add_head_html("""
+            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;800&display=swap">
             <style>
             @keyframes lechu-wiggle {
                 0%, 100% { transform: rotate(-12deg); }
@@ -894,40 +935,73 @@ def build_page() -> None:
                 animation: lechu-wiggle 0.8s ease-in-out infinite;
             }
 
-            /* brandbook theme tokens - light (default) and dark ("dos temas, una madera") */
+            /* brandbook theme tokens - light (default) and dark ("dos temas, una madera").
+               "Acogedor y rico": deeper wood tones, warm gradients, generous
+               rounding - values sourced from the "Lechu - Direcciones de
+               diseño" mockup, Option C, chosen by the user over A/B. */
             :root {
-                --surface-0: #faf9f6;
-                --surface-1: #f2f1ef;
-                --surface-2: #eae7e1;
+                --surface-0: #f7ede0;
+                --surface-1: #fbf4e8;
+                --surface-2: #ead9bc;
                 --text-accent: #a5693a;
-                --bg-accent: rgba(165, 105, 58, 0.12);
-                --text-primary: #2b2925;
-                --text-secondary: rgba(43, 41, 37, 0.65);
-                --text-muted: rgba(43, 41, 37, 0.45);
-                --border: rgba(43, 41, 37, 0.12);
-                --radius-sm: 8px;
-                --radius-md: 12px;
+                --text-accent-2: #8f5a30;
+                --bg-accent: #e8a33d;
+                --bg-accent-text: #ffffff;
+                --text-primary: #3d2b1a;
+                --text-secondary: rgba(61, 43, 26, 0.75);
+                --text-muted: rgba(61, 43, 26, 0.62);
+                --border: rgba(90, 58, 30, 0.14);
+                --radius-sm: 12px;
+                --radius-md: 16px;
+                --radius-lg: 20px;
+                --sidebar-gradient: linear-gradient(180deg, #f3e4cd 0%, #ecd7b6 100%);
+                --card-shadow: 0 1px 3px rgba(90, 58, 30, 0.12);
             }
             body.body--dark {
-                --surface-0: #2a1215;
-                --surface-1: #34363c;
-                --surface-2: #3d4048;
+                --surface-0: #2a1a10;
+                --surface-1: #3a2717;
+                --surface-2: #4a3220;
                 --text-accent: #e8a33d;
-                --bg-accent: rgba(232, 163, 61, 0.16);
-                --text-primary: #f2f1ef;
-                --text-secondary: rgba(242, 241, 239, 0.65);
-                --text-muted: rgba(242, 241, 239, 0.45);
-                --border: rgba(242, 241, 239, 0.12);
+                --text-accent-2: #f0b85e;
+                --bg-accent: #e8a33d;
+                --bg-accent-text: #2a1a10;
+                --text-primary: #f5e9d8;
+                --text-secondary: rgba(245, 233, 216, 0.75);
+                --text-muted: rgba(245, 233, 216, 0.6);
+                --border: rgba(245, 233, 216, 0.14);
+                --sidebar-gradient: linear-gradient(180deg, #3a2717 0%, #2a1a10 100%);
+                --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
             }
-            body { background: var(--surface-0); font-size: 12.5px; }
-            .q-drawer { background: var(--surface-1); }
-            /* Quasar's chat bubble uses `background: currentColor`, so overriding
-               `color` here repaints the bubble itself to match the brandbook
-               instead of Quasar's default light-green for received messages. */
-            .q-message-text--received { color: #f2f1ef; }
-            .q-message-text-content--received { color: #2b2925; }
-            body.body--dark .q-message-text--received { color: #5c2b2e; }
-            body.body--dark .q-message-text-content--received { color: #f2f1ef; }
+            body {
+                background: var(--surface-0);
+                font-size: 12.5px;
+                font-family: 'Nunito', system-ui, sans-serif;
+            }
+            .q-drawer { background: var(--sidebar-gradient); }
+
+            /* native Quasar inputs/buttons pick up the warmer radius without
+               touching every individual ui.select/ui.input/ui.button call site */
+            .q-field--outlined .q-field__control { border-radius: var(--radius-md) !important; }
+            .q-btn { border-radius: var(--radius-sm); }
+
+            /* Quasar's sent bubble paints via the theme's primary color, which
+               can't carry a gradient - overridden explicitly here. The received
+               bubble still uses the `background: currentColor` trick (setting
+               `color` on the wrapper repaints the bubble), just with the new
+               warm fill instead of Quasar's default light-green. */
+            .q-message-text--sent {
+                background: linear-gradient(135deg, #a5693a, #c98f52) !important;
+                border-radius: var(--radius-lg) var(--radius-lg) 4px var(--radius-lg) !important;
+                box-shadow: 0 3px 8px rgba(165, 105, 58, 0.3);
+            }
+            .q-message-text-content--sent { color: #ffffff; }
+            .q-message-text--received {
+                color: #ead9bc;
+                border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) 4px !important;
+            }
+            .q-message-text-content--received { color: #3d2b1a; }
+            body.body--dark .q-message-text--received { color: #4a3220; }
+            body.body--dark .q-message-text-content--received { color: #f5e9d8; }
 
             /* font size */
             body.lechu-font-small .q-message-text-content { font-size: 0.85em; }
@@ -941,13 +1015,17 @@ def build_page() -> None:
                 color: var(--text-primary); cursor: pointer;
             }
             .lechu-list-item:hover { background: var(--surface-2); }
-            .lechu-list-item--active { background: var(--bg-accent); color: var(--text-accent); }
+            .lechu-list-item--active {
+                background: var(--bg-accent); color: var(--bg-accent-text);
+                box-shadow: 0 2px 6px rgba(232, 163, 61, 0.35);
+            }
             .lechu-timestamp { font-size: 10px; color: var(--text-muted); }
+            .lechu-list-item--active .lechu-timestamp { color: var(--bg-accent-text); opacity: 0.75; }
             .lechu-section-label {
                 font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
                 color: var(--text-muted); font-weight: 600;
             }
-            .lechu-search { background: var(--surface-0); border-radius: var(--radius-md); }
+            .lechu-search { background: var(--surface-1); border-radius: var(--radius-md); box-shadow: var(--card-shadow); }
 
             /* sidebar: file tree */
             .lechu-tree .q-tree__node { padding-left: 14px; }
@@ -957,7 +1035,7 @@ def build_page() -> None:
             /* Quasar hardcodes a grey (#9e9e9e) for selected-node text - override
                or our accent color silently loses to it. */
             .lechu-tree .q-tree__node--selected .q-tree__node-header { background: var(--bg-accent); }
-            .lechu-tree .q-tree__node--selected .q-tree__node-header-content { color: var(--text-accent) !important; }
+            .lechu-tree .q-tree__node--selected .q-tree__node-header-content { color: var(--bg-accent-text) !important; }
             .lechu-tree-badge { background: var(--surface-2); color: var(--text-muted); font-size: 10px; }
             </style>
         """)
@@ -991,6 +1069,28 @@ def build_page() -> None:
         with ui.header().classes("items-center justify-between bg-[#a5693a]"):
             ui.label("🦉 Lechu").classes("text-xl font-bold")
 
+            @ui.refreshable
+            def header_status_label() -> None:
+                weather = _header_weather.get("data")
+                text = (
+                    f"{_format_header_date()} · {weather['temperature_c']:.0f}°C {weather['emoji']}"
+                    if weather else _format_header_date()
+                )
+                ui.label(text).classes("text-sm opacity-80")
+
+            header_status_label()
+
+            async def _refresh_header_weather() -> None:
+                loc = location_service.get_cached_location()
+                if loc:
+                    result = await run.io_bound(get_weather, loc["city"])
+                    if "error" not in result:
+                        _header_weather["data"] = result["current"]
+                header_status_label.refresh()
+
+            asyncio.create_task(_refresh_header_weather())
+            ui.timer(3600, lambda: asyncio.create_task(_refresh_header_weather()))
+
         # width=250 via .props(), not .style(): Quasar's QDrawer uses its own
         # `width` prop both for the CSS width AND for the page-content margin
         # it reserves - a pure .style() override desyncs those two and causes
@@ -1013,12 +1113,23 @@ def build_page() -> None:
                         refs_holder["refresh_history"]()
                         refs_holder["model_select"].value = state.active_model
 
+                    def _on_model_change(model: str) -> None:
+                        state.active_model = model
+
                     with ui.row().classes("w-full items-center gap-2"):
                         agent_select = ui.select(
                             {aid: a.name for aid, a in agents.items()}, value=state.agent_id,
                             on_change=lambda e: asyncio.create_task(_on_agent_change(e.value)),
-                        ).props("dense outlined options-dense").classes("w-44")
+                        ).props("dense outlined options-dense").classes("w-36")
                         refs_holder["agent_select"] = agent_select
+
+                        model_options = available_models if available_models else [state.active_model]
+                        model_select = ui.select(
+                            model_options, value=state.active_model,
+                            on_change=lambda e: _on_model_change(e.value),
+                        ).props("dense outlined options-dense").classes("w-28")
+                        refs_holder["model_select"] = model_select
+
                         input_box = ui.input(placeholder="Escribí un mensaje...").classes("flex-grow")
                         send_btn = ui.button(icon="send")
             with content_splitter.after:
@@ -1109,14 +1220,6 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         folder_caption()
         refs_holder["refresh_folder_caption"] = folder_caption.refresh
 
-        def _on_model_change(model: str) -> None:
-            state.active_model = model
-
-        model_options = available_models if available_models else [state.active_model]
-        model_select = ui.select(model_options, value=state.active_model, label="Modelo",
-                                  on_change=lambda e: _on_model_change(e.value)) \
-            .props("dense outlined options-dense").classes("w-full")
-        refs_holder["model_select"] = model_select
         if not available_models:
             ui.label(f"No se pudo conectar con Ollama en {CONFIG.ollama_base_url}.").classes("text-red text-caption")
 
@@ -1348,6 +1451,48 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
                 .classes("text-caption text-gray-500")
 
             ui.separator()
+            ui.label("Ubicación").classes("font-bold text-sm")
+            ui.label("Detección automática por IP, con GPS del sistema si está autorizado.") \
+                .classes("text-caption text-gray-500")
+
+            @ui.refreshable
+            def location_panel() -> None:
+                loc = location_service.get_cached_location()
+                if loc:
+                    place = ", ".join(p for p in (loc["city"], loc["region"], loc["country"]) if p)
+                    tag = "exacta, GPS" if loc.get("source") == "gps" else "aproximada, IP"
+                    ui.label(f"📍 {place} — {tag}").classes("text-caption")
+                else:
+                    ui.label("No se pudo detectar").classes("text-caption")
+
+                async def _refresh_ip() -> None:
+                    result = await run.io_bound(location_service.resolve_location)
+                    location_panel.refresh()
+                    ui.notify(
+                        "✅ Ubicación actualizada" if result else "❌ No se pudo detectar la ubicación",
+                        type="positive" if result else "negative",
+                    )
+
+                async def _refresh_gps() -> None:
+                    result = await run.io_bound(location_service.resolve_location_gps)
+                    location_panel.refresh()
+                    ui.notify(
+                        "✅ Ubicación exacta obtenida"
+                        if result else "❌ No se pudo obtener GPS (¿permiso denegado o Servicios de Ubicación apagados?)",
+                        type="positive" if result else "negative",
+                    )
+
+                with ui.row().classes("items-center"):
+                    ui.button(
+                        "Actualizar por IP", on_click=lambda: asyncio.create_task(_refresh_ip())
+                    ).props("dense outline")
+                    ui.button(
+                        "Usar ubicación exacta (GPS)", on_click=lambda: asyncio.create_task(_refresh_gps())
+                    ).props("dense outline")
+
+            location_panel()
+
+            ui.separator()
             ui.label("Maps").classes("font-bold text-sm")
             ui.label("Distancias y direcciones vía OpenRouteService.") \
                 .classes("text-caption text-gray-500")
@@ -1521,8 +1666,14 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
     dialog.open()
 
 
+async def _prime_location() -> None:
+    await run.io_bound(location_service.resolve_location)
+    await run.io_bound(location_service.resolve_location_gps)
+
+
 def main() -> None:
     build_page()
+    app.on_startup(_prime_location)
     app.on_shutdown(get_client().aclose)
     ui.run(
         native=True,

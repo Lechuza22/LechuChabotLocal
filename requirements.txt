@@ -7,3 +7,4 @@ keyring>=25.0
 google-auth-oauthlib>=1.2
 google-api-python-client>=2.140
 google-auth-httplib2>=0.2
+pyobjc-framework-CoreLocation>=12.0 ; sys_platform == "darwin"
