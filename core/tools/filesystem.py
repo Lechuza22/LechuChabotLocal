@@ -118,9 +118,8 @@ def delete_file(path: str) -> dict:
 
 
 def create_folder(path: str) -> dict:
-    """UI-only helper (Explorer's "nueva carpeta" button) - not registered as
-    an LLM tool, that would let the agent create folders autonomously, which
-    is a separate decision from this one."""
+    """Used by both the Explorer's "nueva carpeta" button and the registered
+    create_folder LLM tool below."""
     target = _resolve_and_validate(path)
     target.mkdir(parents=True, exist_ok=True)
     return {"path": str(target), "created": True}
@@ -172,5 +171,18 @@ register(Tool(
         "required": ["path"],
     },
     func=delete_file,
+    requires_confirmation=True,
+))
+
+register(Tool(
+    name="create_folder",
+    description="Create a new folder (including parent folders) inside a whitelisted directory. "
+                 "Requires user confirmation.",
+    parameters={
+        "type": "object",
+        "properties": {"path": {"type": "string", "description": "Absolute path of the folder to create"}},
+        "required": ["path"],
+    },
+    func=create_folder,
     requires_confirmation=True,
 ))

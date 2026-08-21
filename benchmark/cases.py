@@ -27,6 +27,12 @@ CASES: list[dict] = [
         "prompt": "Recordá que mi color favorito es el verde",
         "expected_tool": "remember_fact",
     },
+    {
+        "name": "general_create_folder",
+        "agent_id": "general",
+        "prompt": "Creá una carpeta nueva llamada borradores",
+        "expected_tool": "create_folder",
+    },
     # --- general: Clima/Maps (Conexiones fase 1) ---
     {
         "name": "general_weather",

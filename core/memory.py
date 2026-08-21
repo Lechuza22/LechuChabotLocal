@@ -138,6 +138,15 @@ def set_conversation_title(conversation_id: int, title: str) -> None:
         )
 
 
+def get_conversation(conversation_id: int) -> sqlite3.Row | None:
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT id, title, agent_id, model, project_id, created_at, updated_at "
+            "FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+
+
 def list_conversations(project_id: int | None = None) -> list[sqlite3.Row]:
     with _connect() as conn:
         cols = "id, title, agent_id, model, project_id, created_at, updated_at"
@@ -196,35 +205,6 @@ def get_conversation_messages(conversation_id: int) -> list[dict]:
     return messages
 
 
-def list_project_documents(project_id: int | None, limit: int = 10) -> list[str]:
-    """Unique file paths touched (read/written) in this project's conversations, most recent first."""
-    with _connect() as conn:
-        project_filter = "c.project_id IS NULL" if project_id is None else "c.project_id = ?"
-        params = () if project_id is None else (project_id,)
-        rows = conn.execute(
-            f"""
-            SELECT m.content FROM messages m
-            JOIN conversations c ON c.id = m.conversation_id
-            WHERE m.role = 'tool' AND m.tool_name IN ('read_file', 'write_file')
-              AND {project_filter}
-            ORDER BY m.created_at DESC
-            """,
-            params,
-        ).fetchall()
-    seen: list[str] = []
-    for row in rows:
-        try:
-            data = json.loads(row["content"])
-        except (json.JSONDecodeError, TypeError):
-            continue
-        path = data.get("path")
-        if path and "error" not in data and path not in seen:
-            seen.append(path)
-        if len(seen) >= limit:
-            break
-    return seen
-
-
 # --- facts -----------------------------------------------------------------
 
 def remember_fact(category: str, key: str, value: str, source: str = "user", conversation_id: int | None = None) -> None:
@@ -264,6 +244,11 @@ def delete_all_facts() -> None:
 def delete_all_conversations() -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM conversations")
+
+
+def delete_conversation(conversation_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
 
 
 # --- app settings (theme, font size, etc.) ------------------------------------

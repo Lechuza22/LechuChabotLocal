@@ -6,6 +6,7 @@ import csv
 import dataclasses
 import io
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -197,6 +198,7 @@ class AppState:
     skills: list[Skill] = field(default_factory=list)
     open_docs: list[dict] = field(default_factory=list)
     active_doc_path: str | None = None
+    open_chat_ids: list[int] = field(default_factory=list)
     title_set: bool = False
     current_turn_task: Optional[asyncio.Task] = None
 
@@ -204,6 +206,7 @@ class AppState:
 @dataclass
 class UIRefs:
     chat_container: ui.column
+    chat_tabs_container: ui.row
     files_container: ui.column
     canvas_container: ui.column
     input_box: ui.input
@@ -441,35 +444,27 @@ def render_canvas(state: AppState, refs: UIRefs) -> None:
         refs.content_splitter.value = _CANVAS_COLLAPSED
 
     with container:
-        with ui.row().classes("items-center justify-between w-full"):
-            ui.label("Documentos").classes("text-lg font-bold")
-            ui.button(icon="keyboard_double_arrow_right", on_click=lambda: _toggle_canvas(refs)) \
-                .props("flat dense round").tooltip("Mostrar/ocultar Documentos")
+        with ui.column().classes("lechu-canvas-topbar w-full gap-0"):
+            with ui.row().classes("items-center justify-between w-full"):
+                ui.label("Documentos").classes("text-lg font-bold")
+                ui.button(icon="keyboard_double_arrow_right", on_click=lambda: _toggle_canvas(refs)) \
+                    .props("flat dense round").tooltip("Mostrar/ocultar Documentos")
 
-        docs = memory.list_project_documents(state.active_project_id)
-        if docs:
-            with ui.expansion("Recientes en este proyecto", value=not state.open_docs).classes("w-full"):
-                for path in docs:
-                    ui.button(
-                        Path(path).name,
-                        on_click=lambda p=path: asyncio.create_task(_open_recent_doc(state, refs, p)),
-                    ).props("flat align=left").classes("w-full justify-start")
+            if not state.open_docs:
+                ui.label("Acá vas a ver los archivos que Lechu lea o escriba durante la conversación.") \
+                    .classes("text-caption text-gray-500")
+                return
 
-        if not state.open_docs:
-            ui.label("Acá vas a ver los archivos que Lechu lea o escriba durante la conversación.") \
-                .classes("text-caption text-gray-500")
-            return
-
-        with ui.row().classes("lechu-doc-tabs w-full no-wrap gap-0"):
-            for doc in state.open_docs:
-                path = doc["path"]
-                is_active = path == state.active_doc_path
-                classes = "lechu-doc-tab" + (" lechu-doc-tab--active" if is_active else "")
-                with ui.row().classes(classes).style("width: auto"):
-                    ui.label(Path(path).name).classes("cursor-pointer").tooltip(path) \
-                        .on("click", lambda p=path: _switch_doc(state, refs, p))
-                    ui.icon("close", size="14px").classes("lechu-doc-tab-close cursor-pointer") \
-                        .on("click", lambda p=path: _close_doc(state, refs, p))
+            with ui.row().classes("lechu-doc-tabs w-full no-wrap gap-0"):
+                for doc in state.open_docs:
+                    path = doc["path"]
+                    is_active = path == state.active_doc_path
+                    classes = "lechu-doc-tab" + (" lechu-doc-tab--active" if is_active else "")
+                    with ui.row().classes(classes).style("width: auto"):
+                        ui.label(Path(path).name).classes("cursor-pointer").tooltip(path) \
+                            .on("click", lambda p=path: _switch_doc(state, refs, p))
+                        ui.icon("close", size="14px").classes("lechu-doc-tab-close cursor-pointer") \
+                            .on("click", lambda p=path: _close_doc(state, refs, p))
 
         active = next((d for d in state.open_docs if d["path"] == state.active_doc_path), None)
         if active is None:
@@ -525,6 +520,124 @@ async def _open_recent_doc(state: AppState, refs: UIRefs, path: str) -> None:
     await run.io_bound(_load_into_canvas, state, path)
     render_canvas(state, refs)
     _reveal_canvas(refs)
+
+
+# --- chat tabs -----------------------------------------------------------------
+
+def _ensure_chat_tab(state: AppState, conv_id: int) -> None:
+    if conv_id not in state.open_chat_ids:
+        state.open_chat_ids.append(conv_id)
+
+
+def _refresh_chat_view(state: AppState, refs: UIRefs, agents: dict[str, Agent]) -> None:
+    render_chat_history(state, refs.chat_container)
+    render_explorer(state, refs)
+    render_canvas(state, refs)
+    render_chat_tabs(state, refs, agents)
+
+
+async def _switch_chat_tab(state: AppState, refs: UIRefs, agents: dict[str, Agent], conv_id: int) -> None:
+    if conv_id == state.conversation_id:
+        return
+    conv_row = memory.get_conversation(conv_id)
+    if conv_row is None:
+        state.open_chat_ids = [c for c in state.open_chat_ids if c != conv_id]
+        render_chat_tabs(state, refs, agents)
+        return
+    await load_conversation(state, conv_row, agents)
+    _refresh_chat_view(state, refs, agents)
+
+
+async def _close_chat_tab(state: AppState, refs: UIRefs, agents: dict[str, Agent], conv_id: int) -> None:
+    state.open_chat_ids = [c for c in state.open_chat_ids if c != conv_id]
+    if state.conversation_id == conv_id:
+        next_row = memory.get_conversation(state.open_chat_ids[-1]) if state.open_chat_ids else None
+        if next_row is not None:
+            await load_conversation(state, next_row, agents)
+        else:
+            # No tabs left - close means close, not "silently open a new one".
+            # The next message sent (or "+ Nueva conversación") starts one explicitly.
+            state.conversation_id = None
+            state.messages = []
+            state.title_set = False
+            state.open_docs = []
+            state.active_doc_path = None
+        _refresh_chat_view(state, refs, agents)
+    else:
+        render_chat_tabs(state, refs, agents)
+
+
+def _sanitize_filename(text: str) -> str:
+    safe = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE).strip()
+    safe = re.sub(r"\s+", "_", safe)
+    return safe[:50] or "chat"
+
+
+def _conversation_to_markdown(conv_row: sqlite3.Row, messages: list[dict]) -> str:
+    title = conv_row["title"] or f"Conversación #{conv_row['id']}"
+    lines = [
+        f"# {title}", "",
+        f"_Agente: {conv_row['agent_id']} · Modelo: {conv_row['model']} · {conv_row['created_at']}_", "",
+    ]
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if not content:
+            continue
+        if role == "user":
+            lines.append(f"**Vos:** {content}")
+            lines.append("")
+        elif role == "assistant":
+            lines.append(f"**Lechu:** {content}")
+            lines.append("")
+    return "\n".join(lines)
+
+
+async def _save_chat_markdown(state: AppState, conv_id: int) -> None:
+    project = _active_project_row(state)
+    if not project or not project["folder_path"]:
+        ui.notify("Abrí un proyecto con carpeta para poder guardar el chat en .md.", type="warning")
+        return
+    conv_row = memory.get_conversation(conv_id)
+    if conv_row is None:
+        return
+    messages = await run.io_bound(memory.get_conversation_messages, conv_id)
+    markdown = _conversation_to_markdown(conv_row, messages)
+    folder_path = project["folder_path"]
+
+    def _write() -> Path:
+        chats_dir = Path(folder_path) / "chats"
+        chats_dir.mkdir(parents=True, exist_ok=True)
+        title = conv_row["title"] or f"conversacion_{conv_id}"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        out_path = chats_dir / f"{stamp}_{_sanitize_filename(title)}.md"
+        out_path.write_text(markdown, encoding="utf-8")
+        return out_path
+
+    out_path = await run.io_bound(_write)
+    ui.notify(f"Guardado en chats/{out_path.name}", type="positive")
+
+
+def render_chat_tabs(state: AppState, refs: UIRefs, agents: dict[str, Agent]) -> None:
+    container = refs.chat_tabs_container
+    container.clear()
+    with container:
+        for conv_id in state.open_chat_ids:
+            conv_row = memory.get_conversation(conv_id)
+            if conv_row is None:
+                continue
+            title = conv_row["title"] or f"Conversación #{conv_id}"
+            short = title if len(title) <= 28 else title[:27] + "…"
+            is_active = conv_id == state.conversation_id
+            classes = "lechu-doc-tab" + (" lechu-doc-tab--active" if is_active else "")
+            with ui.row().classes(classes).style("width: auto"):
+                ui.label(short).classes("cursor-pointer").tooltip(title) \
+                    .on("click", lambda c=conv_id: asyncio.create_task(_switch_chat_tab(state, refs, agents, c)))
+                ui.icon("save", size="13px").classes("lechu-doc-tab-close cursor-pointer") \
+                    .tooltip("Guardar esta charla como .md") \
+                    .on("click", lambda c=conv_id: asyncio.create_task(_save_chat_markdown(state, c)))
+                ui.icon("close", size="14px").classes("lechu-doc-tab-close cursor-pointer") \
+                    .on("click", lambda c=conv_id: asyncio.create_task(_close_chat_tab(state, refs, agents, c)))
 
 
 # --- explorer (file tree) -----------------------------------------------------
@@ -661,11 +774,15 @@ def render_explorer(state: AppState, refs: UIRefs) -> None:
         with ui.row().classes("items-center justify-between w-full q-px-sm q-pt-sm"):
             ui.label("EXPLORADOR").classes("lechu-section-label")
             with ui.row().classes("items-center gap-0"):
+                # on_click=lambda: _fn(...) (not asyncio.create_task(_fn(...))) - returning the
+                # coroutine directly lets NiceGUI's own handle_event schedule/await it inside the
+                # correct slot context. Wrapping it ourselves loses that context and ui.dialog()
+                # inside _fn fails with "the slot stack for this task is empty".
                 ui.button(icon="create_new_folder",
-                          on_click=lambda: asyncio.create_task(_new_folder_dialog(state, refs))) \
+                          on_click=lambda: _new_folder_dialog(state, refs)) \
                     .props("flat dense round").tooltip("Nueva carpeta")
                 ui.button(icon="note_add",
-                          on_click=lambda: asyncio.create_task(_new_file_dialog(state, refs))) \
+                          on_click=lambda: _new_file_dialog(state, refs)) \
                     .props("flat dense round").tooltip("Nuevo archivo")
                 ui.button(icon="unfold_less",
                           on_click=lambda: tree_holder["tree"].collapse()) \
@@ -718,6 +835,10 @@ def render_chat_history(state: AppState, container: ui.column) -> None:
     plumbing, not shown - only real user/assistant text bubbles are rendered."""
     container.clear()
     with container:
+        if state.conversation_id is None:
+            ui.label("No hay ninguna conversación abierta. Creá una nueva o abrí una del historial.") \
+                .classes("text-caption text-gray-500 q-pa-md")
+            return
         for msg in state.messages:
             role = msg["role"]
             if role == "user":
@@ -779,6 +900,8 @@ def _summarize_tool_call(tool_name: str, args: dict) -> str:
         return f"Quiere escribir el archivo {args.get('path', '?')}"
     if tool_name == "delete_file":
         return f"Quiere borrar el archivo {args.get('path', '?')}"
+    if tool_name == "create_folder":
+        return f"Quiere crear la carpeta {args.get('path', '?')}"
     if tool_name == "write_drive_file":
         action = "sobrescribir" if args.get("file_id") else "crear"
         return f"Quiere {action} el archivo de Drive \"{args.get('name', '?')}\""
@@ -897,7 +1020,9 @@ async def _advance(
         await run.io_bound(persist_new_messages, state.conversation_id, state.messages, start_len)
 
 
-async def handle_user_turn(state: AppState, refs: UIRefs, agent: Agent, user_input: str) -> None:
+async def handle_user_turn(
+    state: AppState, refs: UIRefs, agent: Agent, user_input: str, agents: dict[str, Agent],
+) -> None:
     state.messages[0] = build_system_message(agent, user_input, state.skills)
     state.messages.append({"role": "user", "content": user_input})
     await run.io_bound(memory.add_message, state.conversation_id, "user", user_input)
@@ -906,6 +1031,7 @@ async def handle_user_turn(state: AppState, refs: UIRefs, agent: Agent, user_inp
         title = user_input.strip().splitlines()[0][:60]
         await run.io_bound(memory.set_conversation_title, state.conversation_id, title)
         state.title_set = True
+        render_chat_tabs(state, refs, agents)
 
     with refs.chat_container:
         with ui.chat_message(sent=True):
@@ -922,6 +1048,12 @@ async def _on_submit(state: AppState, refs: UIRefs, agents: dict[str, Agent], re
     refs.input_box.disable()
     refs.send_btn.disable()
 
+    if state.conversation_id is None:
+        await start_new_conversation(state, _effective_agent(state))
+        _ensure_chat_tab(state, state.conversation_id)
+        render_chat_history(state, refs.chat_container)
+        render_chat_tabs(state, refs, agents)
+
     routed_agent_id = await run.io_bound(route_agent, text, list(agents.keys()), state.agent_id)
     if routed_agent_id != state.agent_id:
         state.agent_id = routed_agent_id
@@ -930,7 +1062,7 @@ async def _on_submit(state: AppState, refs: UIRefs, agents: dict[str, Agent], re
         refs_holder["model_select"].value = state.active_model
 
     agent = _effective_agent(state)
-    task = asyncio.create_task(handle_user_turn(state, refs, agent, text))
+    task = asyncio.create_task(handle_user_turn(state, refs, agent, text, agents))
     state.current_turn_task = task
     try:
         await task
@@ -1090,6 +1222,14 @@ def build_page() -> None:
             .lechu-timestamp { font-size: 10px; color: var(--text-muted); }
             .lechu-list-item--active .lechu-timestamp { color: var(--bg-accent-text); opacity: 0.75; }
 
+            /* canvas panel: header + tab strip pinned to the top of the scrollable
+               panel, so they stay put while a long document scrolls underneath
+               instead of scrolling away with it. */
+            .lechu-canvas-topbar {
+                position: sticky; top: -8px; margin: -8px -8px 0; padding: 8px 8px 0;
+                z-index: 2; background: var(--surface-0);
+            }
+
             /* canvas panel: open-document tabs (editor-style strip, not pills) */
             .lechu-doc-tabs {
                 display: flex; align-items: stretch; border-bottom: 1px solid var(--border);
@@ -1190,16 +1330,16 @@ def build_page() -> None:
                 .style("height: calc(100vh - 64px)") as content_splitter:
             with content_splitter.before:
                 with ui.column().classes("w-full h-full p-2"):
+                    chat_tabs_container = ui.row().classes("lechu-doc-tabs w-full no-wrap gap-0")
                     chat_container = ui.column().classes("w-full flex-grow overflow-auto")
 
                     async def _on_agent_change(agent_id: str) -> None:
                         state.agent_id = agent_id
                         state.active_model = agents[agent_id].model
                         await start_new_conversation(state, _effective_agent(state))
+                        _ensure_chat_tab(state, state.conversation_id)
                         refs = refs_holder["refs"]
-                        render_chat_history(state, refs.chat_container)
-                        render_canvas(state, refs)
-                        refs_holder["refresh_history"]()
+                        _refresh_chat_view(state, refs, agents)
                         refs_holder["model_select"].value = state.active_model
 
                     def _on_model_change(model: str) -> None:
@@ -1226,6 +1366,7 @@ def build_page() -> None:
 
         refs = UIRefs(
             chat_container=chat_container,
+            chat_tabs_container=chat_tabs_container,
             files_container=files_container,
             canvas_container=canvas_container,
             input_box=input_box,
@@ -1237,9 +1378,11 @@ def build_page() -> None:
         input_box.on("keydown.enter", lambda: asyncio.create_task(_on_submit(state, refs, agents, refs_holder)))
         send_btn.on_click(lambda: asyncio.create_task(_on_submit(state, refs, agents, refs_holder)))
 
+        state.open_chat_ids = [state.conversation_id]
         render_chat_history(state, chat_container)
         render_explorer(state, refs)
         render_canvas(state, refs)
+        render_chat_tabs(state, refs, agents)
 
 
 async def _confirm_dialog(message: str) -> bool:
@@ -1276,11 +1419,9 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
             state.active_project_id = project_id
             await _apply_active_project_scope(state)
             await start_new_conversation(state, _effective_agent(state))
+            state.open_chat_ids = [state.conversation_id]
             refs = refs_holder["refs"]
-            render_chat_history(state, refs.chat_container)
-            render_explorer(state, refs)
-            render_canvas(state, refs)
-            refs_holder["refresh_history"]()
+            _refresh_chat_view(state, refs, agents)
             folder_caption.refresh()
 
         async def _open_folder() -> None:
@@ -1292,12 +1433,10 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
             state.active_project_id = project_id
             await _apply_active_project_scope(state)
             await start_new_conversation(state, _effective_agent(state))
+            state.open_chat_ids = [state.conversation_id]
             refs = refs_holder["refs"]
             project_selector.refresh()
-            render_chat_history(state, refs.chat_container)
-            render_explorer(state, refs)
-            render_canvas(state, refs)
-            refs_holder["refresh_history"]()
+            _refresh_chat_view(state, refs, agents)
             folder_caption.refresh()
 
         @ui.refreshable
@@ -1312,17 +1451,21 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         if not available_models:
             ui.label(f"No se pudo conectar con Ollama en {CONFIG.ollama_base_url}.").classes("text-red text-caption")
 
-    # --- tabs: Chats | Archivos ---
-    with ui.tabs().classes("w-full") as sidebar_tabs:
-        ui.tab("chats", label="Chats", icon="chat")
-        ui.tab("archivos", label="Archivos", icon="folder")
+        async def _new_conversation() -> None:
+            await start_new_conversation(state, _effective_agent(state))
+            _ensure_chat_tab(state, state.conversation_id)
+            refs = refs_holder["refs"]
+            _refresh_chat_view(state, refs, agents)
 
+        with ui.row().classes("w-full gap-1 no-wrap"):
+            ui.button("Nueva conversación", icon="add", on_click=_new_conversation) \
+                .props("outline dense").classes("flex-grow text-caption")
+            ui.button(icon="history", on_click=lambda: _open_historial_dialog(state, refs_holder, agents)) \
+                .props("outline dense").tooltip("Historial de conversaciones")
+
+    # --- rest of the sidebar: just the file explorer (chats moved to tabs) ---
     files_container_holder: dict = {}
-    with ui.tab_panels(sidebar_tabs, value="chats").classes("w-full flex-grow").style("overflow: hidden"):
-        with ui.tab_panel("chats").classes("h-full overflow-auto q-pa-xs"):
-            render_chats_tab(state, agents, refs_holder)
-        with ui.tab_panel("archivos").classes("h-full overflow-auto q-pa-none"):
-            files_container_holder["container"] = ui.column().classes("w-full h-full")
+    files_container_holder["container"] = ui.column().classes("w-full flex-grow overflow-auto q-pa-xs")
 
     # --- footer: fixed, not scrolling ---
     with ui.row().classes("w-full items-center q-pa-sm").style("border-top: 1px solid var(--border)"):
@@ -1333,75 +1476,97 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
     return files_container_holder["container"]
 
 
-def render_chats_tab(state: AppState, agents: dict[str, Agent], refs_holder: dict) -> None:
+def _open_historial_dialog(state: AppState, refs_holder: dict, agents: dict[str, Agent]) -> None:
+    """Search/browse conversations not currently open as a tab - selecting one opens
+    it as a tab (or switches to it, if already open) and closes the dialog."""
     search_state = {"query": ""}
 
-    async def _new_conversation() -> None:
-        await start_new_conversation(state, _effective_agent(state))
-        refs = refs_holder["refs"]
-        render_chat_history(state, refs.chat_container)
-        render_canvas(state, refs)
-        history_panel.refresh()
+    with ui.dialog() as dialog, ui.card().classes("w-96"):
+        ui.label("Historial de conversaciones").classes("text-lg font-bold")
 
-    ui.button("Nueva conversación", icon="add", on_click=_new_conversation) \
-        .props("outline dense").classes("w-full q-mb-xs text-caption")
+        search_input = ui.input(placeholder="Buscar conversaciones...") \
+            .props("dense outlined").classes("w-full")
 
-    search_input = ui.input(placeholder="Buscar conversaciones...") \
-        .props("dense borderless").classes("w-full lechu-search")
-    with search_input.add_slot("prepend"):
-        ui.icon("search").classes("text-sm")
+        async def _select(conv_row: sqlite3.Row) -> None:
+            dialog.close()
+            if conv_row["id"] == state.conversation_id:
+                return
+            await load_conversation(state, conv_row, agents)
+            _ensure_chat_tab(state, state.conversation_id)
+            refs = refs_holder["refs"]
+            _refresh_chat_view(state, refs, agents)
+            refs_holder["refresh_project_selector"]()
+            refs_holder["refresh_folder_caption"]()
 
-    def _on_chats_search_change(e) -> None:
-        search_state["query"] = (e.value or "").strip().lower()
-        history_panel.refresh()
+        async def _delete(conv_row: sqlite3.Row) -> None:
+            title = conv_row["title"] or f"Conversación #{conv_row['id']}"
+            if not await _confirm_dialog(f'¿Borrar "{title}"? No se puede deshacer.'):
+                return
+            await run.io_bound(memory.delete_conversation, conv_row["id"])
+            state.open_chat_ids = [c for c in state.open_chat_ids if c != conv_row["id"]]
+            refs = refs_holder["refs"]
+            if state.conversation_id == conv_row["id"]:
+                next_row = memory.get_conversation(state.open_chat_ids[-1]) if state.open_chat_ids else None
+                if next_row is not None:
+                    await load_conversation(state, next_row, agents)
+                else:
+                    state.conversation_id = None
+                    state.messages = []
+                    state.title_set = False
+                    state.open_docs = []
+                    state.active_doc_path = None
+                _refresh_chat_view(state, refs, agents)
+            else:
+                render_chat_tabs(state, refs, agents)
+            results_panel.refresh()
 
-    search_input.on_value_change(_on_chats_search_change)
+        @ui.refreshable
+        def results_panel() -> None:
+            conversations = memory.list_conversations(state.active_project_id)
+            query = search_state["query"]
+            if query:
+                conversations = [c for c in conversations if query in (c["title"] or "").lower()]
+            if not conversations:
+                msg = "Sin resultados." if query else "Sin conversaciones todavía en este proyecto."
+                ui.label(msg).classes("text-caption text-gray-500 q-pa-sm")
+                return
 
-    @ui.refreshable
-    def history_panel() -> None:
-        conversations = memory.list_conversations(state.active_project_id)
-        query = search_state["query"]
-        if query:
-            conversations = [c for c in conversations if query in (c["title"] or "").lower()]
-        if not conversations:
-            msg = "Sin resultados." if query else "Sin conversaciones todavía en este proyecto."
-            ui.label(msg).classes("text-caption text-gray-500 q-pa-sm")
-            return
+            today_local = datetime.now().astimezone().date()
+            buckets: dict[str, list] = {b: [] for b in _BUCKET_ORDER}
+            for conv in conversations:
+                dt_local = _to_local_dt(conv["updated_at"])
+                buckets[_bucket_for(dt_local, today_local)].append((conv, dt_local))
 
-        today_local = datetime.now().astimezone().date()
-        buckets: dict[str, list] = {b: [] for b in _BUCKET_ORDER}
-        for conv in conversations:
-            dt_local = _to_local_dt(conv["updated_at"])
-            buckets[_bucket_for(dt_local, today_local)].append((conv, dt_local))
+            for bucket in _BUCKET_ORDER:
+                items = buckets[bucket]
+                if not items:
+                    continue
+                ui.label(bucket).classes("lechu-section-label q-mt-sm q-mb-xs")
+                for conv, dt_local in items:
+                    label = conv["title"] or f"Conversación #{conv['id']}"
+                    ts = _format_timestamp(dt_local, bucket)
+                    is_active = conv["id"] == state.conversation_id
+                    classes = "lechu-list-item w-full" + (" lechu-list-item--active" if is_active else "")
+                    with ui.row().classes(classes):
+                        with ui.row().classes("items-center gap-2 col-grow cursor-pointer").on(
+                            "click", lambda c=conv: asyncio.create_task(_select(c))
+                        ):
+                            ui.label(label).classes("ellipsis col-grow")
+                            ui.label(ts).classes("lechu-timestamp")
+                        ui.icon("delete", size="16px").classes("cursor-pointer opacity-60") \
+                            .tooltip("Borrar conversación") \
+                            .on("click", lambda c=conv: _delete(c))
 
-        for bucket in _BUCKET_ORDER:
-            items = buckets[bucket]
-            if not items:
-                continue
-            ui.label(bucket).classes("lechu-section-label q-mt-sm q-mb-xs")
-            for conv, dt_local in items:
-                label = conv["title"] or f"Conversación #{conv['id']}"
-                ts = _format_timestamp(dt_local, bucket)
-                is_active = conv["id"] == state.conversation_id
-                classes = "lechu-list-item w-full" + (" lechu-list-item--active" if is_active else "")
-                with ui.row().classes(classes).on(
-                    "click", lambda c=conv: asyncio.create_task(_load_history(c))
-                ):
-                    ui.label(label).classes("ellipsis col-grow")
-                    ui.label(ts).classes("lechu-timestamp")
+        def _on_search_change(e) -> None:
+            search_state["query"] = (e.value or "").strip().lower()
+            results_panel.refresh()
 
-    async def _load_history(conv_row: sqlite3.Row) -> None:
-        await load_conversation(state, conv_row, agents)
-        refs = refs_holder["refs"]
-        render_chat_history(state, refs.chat_container)
-        render_explorer(state, refs)
-        render_canvas(state, refs)
-        refs_holder["refresh_project_selector"]()
-        refs_holder["refresh_folder_caption"]()
-        history_panel.refresh()
+        search_input.on_value_change(_on_search_change)
 
-    history_panel()
-    refs_holder["refresh_history"] = history_panel.refresh
+        with ui.column().classes("w-full gap-0").style("max-height: 60vh; overflow-y: auto"):
+            results_panel()
+
+    dialog.open()
 
 
 def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder: dict) -> None:
@@ -1745,9 +1910,8 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
                 await run.io_bound(memory.delete_all_conversations)
                 refs = refs_holder["refs"]
                 await start_new_conversation(state, _effective_agent(state))
-                render_chat_history(state, refs.chat_container)
-                render_canvas(state, refs)
-                refs_holder["refresh_history"]()
+                state.open_chat_ids = [state.conversation_id]
+                _refresh_chat_view(state, refs, agents)
                 ui.notify("Conversaciones borradas", type="positive")
 
         ui.button("Borrar todos los hechos", on_click=_reset_facts).props("outline color=red").classes("w-full")

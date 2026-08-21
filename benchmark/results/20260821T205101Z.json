@@ -1,0 +1,73 @@
+{
+  "timestamp": "20260821T205101Z",
+  "think": null,
+  "results": [
+    {
+      "name": "general_read_file",
+      "agent_id": "general",
+      "prompt": "Leé el archivo notas.txt",
+      "expected_tool": "read_file",
+      "outcomes": [
+        "read_file",
+        "read_file",
+        "read_file"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "general_remember_fact",
+      "agent_id": "general",
+      "prompt": "Recordá que mi color favorito es el verde",
+      "expected_tool": "remember_fact",
+      "outcomes": [
+        "remember_fact",
+        "remember_fact",
+        "remember_fact"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "general_create_folder",
+      "agent_id": "general",
+      "prompt": "Creá una carpeta nueva llamada borradores",
+      "expected_tool": "create_folder",
+      "outcomes": [
+        "create_folder",
+        "create_folder",
+        "create_folder"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "general_weather",
+      "agent_id": "general",
+      "prompt": "¿Qué tiempo hace en Buenos Aires ahora mismo?",
+      "expected_tool": "get_weather",
+      "outcomes": [
+        "get_weather",
+        "get_weather",
+        "get_weather"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "general_directions",
+      "agent_id": "general",
+      "prompt": "¿Cuánto se tarda en auto de Palermo a Tigre?",
+      "expected_tool": "get_directions",
+      "outcomes": [
+        "get_directions",
+        "get_directions",
+        "get_directions"
+      ],
+      "passed": 3,
+      "runs": 3
+    }
+  ],
+  "total_passed": 15,
+  "total_runs": 15
+}

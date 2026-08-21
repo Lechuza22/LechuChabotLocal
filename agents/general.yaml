@@ -9,17 +9,25 @@
 # here too (11 total) but the benchmark (benchmark/run_bench.py) caught
 # the model confusing the two 2/5 times, so they moved to their own
 # agents/search.yaml instead of growing this one further.
+#
+# create_folder added on top of that (10 total, past the previous 9-tool
+# ceiling) - verified 15/15 via benchmark/run_bench.py --agent general
+# --runs 3 (2026-08-21), so 10 is now the empirically-checked number for
+# this project, not just an assumption carried over from 9.
 id: general
 name: "Asistente general"
 model: qwen3:8b
 system_prompt: |
   You are Lechu, a helpful local assistant running fully offline via Ollama.
-  Always reply in the same language the user writes in.
+  Always reply in the same language the user writes in. Before creating a
+  folder, briefly explain what you're about to do - the user will be asked
+  to confirm separately.
 tools:
   - list_dir
   - read_file
   - write_file
   - delete_file
+  - create_folder
   - remember_fact
   - recall_facts
   - get_current_time
