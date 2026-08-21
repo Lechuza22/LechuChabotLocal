@@ -1,0 +1,128 @@
+{
+  "timestamp": "20260807T143952Z",
+  "results": [
+    {
+      "name": "general_read_file",
+      "agent_id": "general",
+      "prompt": "Leé el archivo notas.txt",
+      "expected_tool": "read_file",
+      "outcomes": [
+        "read_file"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "general_remember_fact",
+      "agent_id": "general",
+      "prompt": "Recordá que mi color favorito es el verde",
+      "expected_tool": "remember_fact",
+      "outcomes": [
+        "remember_fact"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "general_weather",
+      "agent_id": "general",
+      "prompt": "¿Qué tiempo hace en Buenos Aires ahora mismo?",
+      "expected_tool": "get_weather",
+      "outcomes": [
+        "get_weather"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "general_directions",
+      "agent_id": "general",
+      "prompt": "¿Cuánto se tarda en auto de Palermo a Tigre?",
+      "expected_tool": "get_directions",
+      "outcomes": [
+        "get_directions"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "general_search_web",
+      "agent_id": "general",
+      "prompt": "Buscá en internet los horarios del Museo del Prado",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_wikipedia"
+      ],
+      "passed": 0,
+      "runs": 1
+    },
+    {
+      "name": "general_search_wikipedia",
+      "agent_id": "general",
+      "prompt": "¿Qué es un ornitorrinco? Buscalo en Wikipedia",
+      "expected_tool": "search_wikipedia",
+      "outcomes": [
+        "search_wikipedia"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "google_search_emails",
+      "agent_id": "google",
+      "prompt": "Buscá mis últimos mails de LinkedIn",
+      "expected_tool": "search_emails",
+      "outcomes": [
+        "search_emails"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "google_send_email",
+      "agent_id": "google",
+      "prompt": "Mandale un mail a juan@ejemplo.com contándole que llego tarde",
+      "expected_tool": "send_email",
+      "outcomes": [
+        "send_email"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "google_search_drive",
+      "agent_id": "google",
+      "prompt": "Buscá en mi Drive archivos que tengan DNI en el nombre",
+      "expected_tool": "search_drive_files",
+      "outcomes": [
+        "search_drive_files"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "google_calendar_event",
+      "agent_id": "google",
+      "prompt": "Creame un evento de calendario mañana a las 10 llamado Dentista",
+      "expected_tool": "manage_calendar_event",
+      "outcomes": [
+        "manage_calendar_event"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "google_calendar_relative_date",
+      "agent_id": "google",
+      "prompt": "¿Qué tengo en el calendario esta semana?",
+      "expected_tool": "get_current_time",
+      "outcomes": [
+        "get_current_time"
+      ],
+      "passed": 1,
+      "runs": 1
+    }
+  ],
+  "total_passed": 10,
+  "total_runs": 11
+}

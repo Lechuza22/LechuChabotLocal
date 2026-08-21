@@ -1,0 +1,59 @@
+{
+  "timestamp": "20260821T015711Z",
+  "results": [
+    {
+      "name": "search_web_horarios",
+      "agent_id": "search",
+      "prompt": "Buscá en internet los horarios del Museo del Prado",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_web",
+        "search_web",
+        "search_web"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_web_capital",
+      "agent_id": "search",
+      "prompt": "Buscá en Google cuál es la capital de Mongolia",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_web",
+        "search_web",
+        "search_web"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_wikipedia_ornitorrinco",
+      "agent_id": "search",
+      "prompt": "¿Qué es un ornitorrinco? Buscalo en Wikipedia",
+      "expected_tool": "search_wikipedia",
+      "outcomes": [
+        "search_wikipedia",
+        "search_wikipedia",
+        "search_wikipedia"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_wikipedia_bolivar",
+      "agent_id": "search",
+      "prompt": "¿Quién fue Simón Bolívar? Buscalo en Wikipedia",
+      "expected_tool": "search_wikipedia",
+      "outcomes": [
+        "search_wikipedia",
+        "search_wikipedia",
+        "search_wikipedia"
+      ],
+      "passed": 3,
+      "runs": 3
+    }
+  ],
+  "total_passed": 12,
+  "total_runs": 12
+}

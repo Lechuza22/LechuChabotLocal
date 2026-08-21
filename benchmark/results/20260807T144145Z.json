@@ -1,0 +1,22 @@
+{
+  "timestamp": "20260807T144145Z",
+  "results": [
+    {
+      "name": "general_search_web",
+      "agent_id": "general",
+      "prompt": "Buscá en internet los horarios del Museo del Prado",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_web",
+        "search_wikipedia",
+        "search_wikipedia",
+        "search_web",
+        "search_web"
+      ],
+      "passed": 3,
+      "runs": 5
+    }
+  ],
+  "total_passed": 3,
+  "total_runs": 5
+}

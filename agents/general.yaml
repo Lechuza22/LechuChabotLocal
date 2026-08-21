@@ -4,10 +4,11 @@
 # empirical comparison. Switch back to mistral per-conversation via the
 # sidebar's model selector if you don't need tool use.
 #
-# get_weather/get_directions bring this to 9 tools - one step further than
-# the 7-tool case that was actually measured. Not yet verified whether
-# qwen3:8b's reliability holds at this count; if it visibly degrades, split
-# these two into a lighter dedicated agent instead of growing this one.
+# get_weather/get_directions brought this to 9 tools (verified 6/6 directly
+# against Ollama) - stayed there. search_web/search_wikipedia were tried
+# here too (11 total) but the benchmark (benchmark/run_bench.py) caught
+# the model confusing the two 2/5 times, so they moved to their own
+# agents/search.yaml instead of growing this one further.
 id: general
 name: "Asistente general"
 model: qwen3:8b

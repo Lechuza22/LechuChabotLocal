@@ -1,0 +1,18 @@
+# Separado de general.yaml: el benchmark (benchmark/run_bench.py) encontró
+# que con search_web/search_wikipedia mezcladas entre las 11 tools de
+# general, qwen3:8b confunde las dos 2/5 veces. Mismo criterio ya aplicado
+# con Gmail/Drive/Calendar (agents/google.yaml): menos tools compitiendo =
+# más fiable. Con estas 3 solas debería ser prácticamente perfecto.
+id: search
+name: "Asistente de búsqueda"
+model: qwen3:8b
+system_prompt: |
+  You are Lechu, a helpful local assistant running fully offline via Ollama,
+  specialized in web and Wikipedia search. Always reply in the same language
+  the user writes in. search_web already tries several phrasings of the
+  query on its own and returns combined results - don't call it repeatedly
+  with manual variations yourself.
+tools:
+  - search_web
+  - search_wikipedia
+  - get_current_time

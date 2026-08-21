@@ -68,10 +68,12 @@ from config import AGENTS_DIR, CONFIG, SKILLS_DIR, add_whitelisted_folder, remov
 from core import google_auth, memory, projects
 from core.agents import Agent, load_agents
 from core.llm import OllamaClient
+from core.router import route_agent
 from core.secrets import delete_secret, get_secret, set_secret
 from core.skills import Skill, load_skills, match_skills
 from core.tool_loop import Continue, FinalAnswer, PendingConfirmation, execute_tool, step_agent_stream
 from core.tools import maps as maps_tools
+from core.tools import websearch_tools
 from core.tools.datetime_tools import get_current_time
 from core.tools.filesystem import (
     create_folder, get_active_roots, read_file, read_file_bytes, set_active_roots, write_file,
@@ -112,6 +114,20 @@ def _time_context() -> str:
         f"({info['weekday']}). Use this as the real current date/time for anything "
         f"relative ('today', 'tomorrow', 'this week') - never assume or guess a date."
     )
+
+
+# Ported from a sibling project (AgenteCode, a separate local coding-agent
+# CLI on the same qwen3:8b) where both lines were validated against
+# concrete failures: the model fabricating a full "ran the script" output
+# it never actually produced, and re-issuing the identical failing tool
+# call instead of adjusting. Shared across all agents here (not duplicated
+# per agents/*.yaml) so it can't drift out of sync between them.
+_AGENT_GUARDRAILS = (
+    "If a tool call fails or returns an error, read the message and adjust your "
+    "next call - never repeat the exact same failing call again. Never claim you "
+    "performed an action you did not actually call a tool for, and never invent "
+    "a tool's output."
+)
 
 
 def _guess_language(ext: str) -> str | None:
@@ -267,7 +283,7 @@ def persist_new_messages(conv_id: int, messages: list[dict], start_index: int) -
 
 def build_system_message(agent: Agent, user_input: str, skills: list[Skill]) -> dict:
     matched: list[Skill] = match_skills(user_input, skills)
-    text = agent.system_prompt
+    text = agent.system_prompt + "\n\n" + _AGENT_GUARDRAILS
 
     roots = get_active_roots()
     if roots:
@@ -714,14 +730,21 @@ async def _ask_confirmation(container: ui.column, agent: Agent, pc: PendingConfi
     return result if result is not None else {"error": "cancelled"}
 
 
-async def _advance(state: AppState, refs: UIRefs, agent: Agent) -> None:
+async def _advance(
+    state: AppState, refs: UIRefs, agent: Agent, failed_counts: dict[tuple, int] | None = None,
+) -> None:
+    # Owned for the whole user turn, not just this call - passed through the
+    # recursive call below (after a confirmation resolves) so a repeated
+    # failing call is still caught across that boundary.
+    if failed_counts is None:
+        failed_counts = {}
     start_len = len(state.messages)
     bubble, thinking, md = _new_thinking_bubble(refs.chat_container, agent)
     try:
         result = None
         content_started = False
         for _ in range(CONFIG.max_tool_iterations):
-            chunks, box = await step_agent_stream(get_client(), agent, state.messages)
+            chunks, box = await step_agent_stream(get_client(), agent, state.messages, failed_counts)
             if await _stream_into_chat(md, thinking, chunks):
                 content_started = True
             result = box["result"]
@@ -755,7 +778,7 @@ async def _advance(state: AppState, refs: UIRefs, agent: Agent) -> None:
                 await run.io_bound(_load_into_canvas, state, tool_result["path"])
                 render_canvas(state, refs)
                 render_explorer(state, refs)
-            await _advance(state, refs, agent)
+            await _advance(state, refs, agent, failed_counts)
 
     except httpx.HTTPError as e:
         msg = f"No se pudo contactar a Ollama: {e}"
@@ -783,13 +806,21 @@ async def handle_user_turn(state: AppState, refs: UIRefs, agent: Agent, user_inp
     await _advance(state, refs, agent)
 
 
-async def _on_submit(state: AppState, refs: UIRefs) -> None:
+async def _on_submit(state: AppState, refs: UIRefs, agents: dict[str, Agent], refs_holder: dict) -> None:
     text = (refs.input_box.value or "").strip()
     if not text or (state.current_turn_task and not state.current_turn_task.done()):
         return
     refs.input_box.value = ""
     refs.input_box.disable()
     refs.send_btn.disable()
+
+    routed_agent_id = await run.io_bound(route_agent, text, list(agents.keys()), state.agent_id)
+    if routed_agent_id != state.agent_id:
+        state.agent_id = routed_agent_id
+        state.active_model = agents[routed_agent_id].model
+        refs_holder["agent_select"].value = routed_agent_id
+        refs_holder["model_select"].value = state.active_model
+
     agent = _effective_agent(state)
     task = asyncio.create_task(handle_user_turn(state, refs, agent, text))
     state.current_turn_task = task
@@ -972,7 +1003,22 @@ def build_page() -> None:
             with content_splitter.before:
                 with ui.column().classes("w-full h-full p-2"):
                     chat_container = ui.column().classes("w-full flex-grow overflow-auto")
-                    with ui.row().classes("w-full items-center"):
+
+                    async def _on_agent_change(agent_id: str) -> None:
+                        state.agent_id = agent_id
+                        state.active_model = agents[agent_id].model
+                        await start_new_conversation(state, _effective_agent(state))
+                        refs = refs_holder["refs"]
+                        render_chat_history(state, refs.chat_container)
+                        refs_holder["refresh_history"]()
+                        refs_holder["model_select"].value = state.active_model
+
+                    with ui.row().classes("w-full items-center gap-2"):
+                        agent_select = ui.select(
+                            {aid: a.name for aid, a in agents.items()}, value=state.agent_id,
+                            on_change=lambda e: asyncio.create_task(_on_agent_change(e.value)),
+                        ).props("dense outlined options-dense").classes("w-44")
+                        refs_holder["agent_select"] = agent_select
                         input_box = ui.input(placeholder="Escribí un mensaje...").classes("flex-grow")
                         send_btn = ui.button(icon="send")
             with content_splitter.after:
@@ -988,8 +1034,8 @@ def build_page() -> None:
         )
         refs_holder["refs"] = refs
 
-        input_box.on("keydown.enter", lambda: asyncio.create_task(_on_submit(state, refs)))
-        send_btn.on_click(lambda: asyncio.create_task(_on_submit(state, refs)))
+        input_box.on("keydown.enter", lambda: asyncio.create_task(_on_submit(state, refs, agents, refs_holder)))
+        send_btn.on_click(lambda: asyncio.create_task(_on_submit(state, refs, agents, refs_holder)))
 
         render_chat_history(state, chat_container)
         render_explorer(state, refs)
@@ -1063,19 +1109,6 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         folder_caption()
         refs_holder["refresh_folder_caption"] = folder_caption.refresh
 
-        async def _on_agent_change(agent_id: str) -> None:
-            state.agent_id = agent_id
-            state.active_model = agents[agent_id].model
-            await start_new_conversation(state, _effective_agent(state))
-            refs = refs_holder["refs"]
-            render_chat_history(state, refs.chat_container)
-            refs_holder["refresh_history"]()
-            model_select.value = state.active_model
-
-        ui.select({aid: a.name for aid, a in agents.items()}, value=state.agent_id, label="Agente",
-                  on_change=lambda e: asyncio.create_task(_on_agent_change(e.value))) \
-            .props("dense outlined options-dense").classes("w-full")
-
         def _on_model_change(model: str) -> None:
             state.active_model = model
 
@@ -1083,6 +1116,7 @@ def render_sidebar(state: AppState, agents: dict[str, Agent], available_models: 
         model_select = ui.select(model_options, value=state.active_model, label="Modelo",
                                   on_change=lambda e: _on_model_change(e.value)) \
             .props("dense outlined options-dense").classes("w-full")
+        refs_holder["model_select"] = model_select
         if not available_models:
             ui.label(f"No se pudo conectar con Ollama en {CONFIG.ollama_base_url}.").classes("text-red text-caption")
 
@@ -1352,6 +1386,60 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
                         ui.button("Quitar", on_click=_remove_key).props("dense outline color=red")
 
             maps_panel()
+
+            ui.separator()
+            ui.label("Búsqueda web").classes("font-bold text-sm")
+            ui.label("Wikipedia activa vía su API pública — no requiere configuración.") \
+                .classes("text-caption text-gray-500")
+            ui.label("Google Custom Search requiere API key + Search Engine ID (cx).") \
+                .classes("text-caption text-gray-500")
+            ui.label(
+                "Cada búsqueda prueba ~3 formas distintas de preguntar (3 consultas reales) - "
+                "con el plan gratis de 100/día alcanza para ~33 búsquedas."
+            ).classes("text-caption text-gray-500")
+
+            @ui.refreshable
+            def websearch_panel() -> None:
+                has_key = (
+                    get_secret(websearch_tools.API_KEY_SECRET) is not None
+                    and get_secret(websearch_tools.CX_SECRET) is not None
+                )
+                ui.label("🔑 Configurado" if has_key else "Sin configurar").classes("text-caption")
+
+                key_input = ui.input(placeholder="API key de Google Custom Search...") \
+                    .props("type=password dense").classes("w-full")
+                cx_input = ui.input(placeholder="Search Engine ID (cx)...") \
+                    .props("dense").classes("w-full")
+
+                def _save_key() -> None:
+                    if key_input.value and cx_input.value:
+                        set_secret(websearch_tools.API_KEY_SECRET, key_input.value)
+                        set_secret(websearch_tools.CX_SECRET, cx_input.value)
+                        key_input.value = ""
+                        cx_input.value = ""
+                        websearch_panel.refresh()
+                        ui.notify("Búsqueda web guardada", type="positive")
+
+                def _remove_key() -> None:
+                    delete_secret(websearch_tools.API_KEY_SECRET)
+                    delete_secret(websearch_tools.CX_SECRET)
+                    websearch_panel.refresh()
+                    ui.notify("Búsqueda web eliminada", type="positive")
+
+                async def _test_key() -> None:
+                    ok = await run.io_bound(websearch_tools.test_connection)
+                    ui.notify(
+                        "✅ Conexión OK" if ok else "❌ No se pudo validar la conexión (¿key/cx correctos?)",
+                        type="positive" if ok else "negative",
+                    )
+
+                with ui.row().classes("w-full items-center"):
+                    ui.button("Guardar", on_click=_save_key).props("dense")
+                    ui.button("Probar conexión", on_click=lambda: asyncio.create_task(_test_key())).props("dense outline")
+                    if has_key:
+                        ui.button("Quitar", on_click=_remove_key).props("dense outline color=red")
+
+            websearch_panel()
 
             ui.separator()
             ui.label("Google (Gmail, Drive, Calendar)").classes("font-bold text-sm")

@@ -42,3 +42,5 @@ from core.tools import maps as _maps  # noqa: E402,F401
 from core.tools import gmail_tools as _gmail_tools  # noqa: E402,F401
 from core.tools import drive_tools as _drive_tools  # noqa: E402,F401
 from core.tools import calendar_tools as _calendar_tools  # noqa: E402,F401
+from core.tools import wikipedia_tools as _wikipedia_tools  # noqa: E402,F401
+from core.tools import websearch_tools as _websearch_tools  # noqa: E402,F401

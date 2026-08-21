@@ -1,0 +1,51 @@
+{
+  "timestamp": "20260821T015816Z",
+  "results": [
+    {
+      "name": "general_read_file",
+      "agent_id": "general",
+      "prompt": "Leé el archivo notas.txt",
+      "expected_tool": "read_file",
+      "outcomes": [
+        "read_file"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "general_remember_fact",
+      "agent_id": "general",
+      "prompt": "Recordá que mi color favorito es el verde",
+      "expected_tool": "remember_fact",
+      "outcomes": [
+        "remember_fact"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "general_weather",
+      "agent_id": "general",
+      "prompt": "¿Qué tiempo hace en Buenos Aires ahora mismo?",
+      "expected_tool": "get_weather",
+      "outcomes": [
+        "get_weather"
+      ],
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "name": "general_directions",
+      "agent_id": "general",
+      "prompt": "¿Cuánto se tarda en auto de Palermo a Tigre?",
+      "expected_tool": "get_directions",
+      "outcomes": [
+        "get_directions"
+      ],
+      "passed": 1,
+      "runs": 1
+    }
+  ],
+  "total_passed": 4,
+  "total_runs": 4
+}

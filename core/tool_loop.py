@@ -45,13 +45,23 @@ def execute_tool(tool_name: str, args: dict) -> dict:
         return {"error": str(e)}
 
 
-async def step_agent_stream(client: OllamaClient, agent: Agent, messages: list[dict]) -> tuple[AsyncIterator[str], dict]:
+async def step_agent_stream(
+    client: OllamaClient, agent: Agent, messages: list[dict], failed_counts: dict[tuple, int],
+) -> tuple[AsyncIterator[str], dict]:
     """Streams one model turn's reply.
 
     Returns (chunks, box). `chunks` yields text pieces as they arrive - drive
     it to completion (e.g. via _stream_into_chat) before reading box["result"],
     which is only populated once the generator is exhausted. Tool-call chunks
     carry no content, so turns that end up calling a tool just yield nothing.
+
+    `failed_counts` is owned by the caller and lives for the whole user turn
+    (across repeated calls to this function, including after a confirmation
+    resolves) - keyed by (tool_name, sorted json args) of calls that errored,
+    so a call repeated identically gets an escalating warning appended to its
+    result instead of the model silently retrying it forever. Ported from a
+    sibling local-agent project where this concretely fixed qwen3:8b looping
+    on the same failing call.
     """
     box: dict = {"result": None}
 
@@ -93,7 +103,20 @@ async def step_agent_stream(client: OllamaClient, agent: Agent, messages: list[d
                 return
             else:
                 result = await run.io_bound(execute_tool, name, args)
-                _append_tool_result(messages, call_id, result if result is not None else {"error": "cancelled"})
+                if result is None:
+                    result = {"error": "cancelled"}
+                elif "error" in result:
+                    signature = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+                    failed_counts[signature] = failed_counts.get(signature, 0) + 1
+                    times = failed_counts[signature]
+                    if times >= 2:
+                        result = dict(result)
+                        result["warning"] = (
+                            f"You made this EXACT same call {times} times and it failed identically "
+                            "every time. Do not repeat it again - change your approach, try a "
+                            "different tool, or tell the user you're stuck."
+                        )
+                _append_tool_result(messages, call_id, result)
 
         box["result"] = Continue()
 
