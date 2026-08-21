@@ -43,20 +43,22 @@ from core.llm import OllamaClient  # noqa: E402
 RESULTS_DIR = BENCH_DIR / "results"
 
 
-async def _first_tool_call(client: OllamaClient, agent: Agent, prompt: str) -> str | None:
+async def _first_tool_call(client: OllamaClient, agent: Agent, prompt: str, think: bool | None) -> str | None:
     messages = [
         {"role": "system", "content": agent.system_prompt},
         {"role": "user", "content": prompt},
     ]
-    async for chunk in client.chat_stream(model=agent.model, messages=messages, tools=[t.schema for t in agent.tools]):
+    async for chunk in client.chat_stream(
+        model=agent.model, messages=messages, tools=[t.schema for t in agent.tools], think=think,
+    ):
         msg = chunk.get("message", {})
         if msg.get("tool_calls"):
             return msg["tool_calls"][0]["function"]["name"]
     return None
 
 
-async def run_case(client: OllamaClient, agent: Agent, case: dict, runs: int) -> dict:
-    outcomes = [await _first_tool_call(client, agent, case["prompt"]) for _ in range(runs)]
+async def run_case(client: OllamaClient, agent: Agent, case: dict, runs: int, think: bool | None) -> dict:
+    outcomes = [await _first_tool_call(client, agent, case["prompt"], think) for _ in range(runs)]
     passed = sum(1 for o in outcomes if o == case["expected_tool"])
     return {
         "name": case["name"],
@@ -89,7 +91,7 @@ async def main_async(args: argparse.Namespace) -> int:
         if agent_id not in agents:
             print(f"  {case['name']}: agente '{agent_id}' no existe, salteado")
             continue
-        result = await run_case(client, agents[agent_id], case, args.runs)
+        result = await run_case(client, agents[agent_id], case, args.runs, args.think)
         results.append(result)
         total_passed += result["passed"]
         total_runs += result["runs"]
@@ -104,6 +106,7 @@ async def main_async(args: argparse.Namespace) -> int:
     out_path = RESULTS_DIR / f"{timestamp}.json"
     out_path.write_text(json.dumps({
         "timestamp": timestamp,
+        "think": args.think,
         "results": results,
         "total_passed": total_passed,
         "total_runs": total_runs,
@@ -119,6 +122,10 @@ def main() -> None:
     parser.add_argument("--agent", help="Solo correr casos de este agent_id")
     parser.add_argument("--case", help="Solo correr este caso por nombre")
     parser.add_argument("--runs", type=int, default=1, help="Repeticiones por caso (default 1)")
+    parser.add_argument(
+        "--think", action=argparse.BooleanOptionalAction, default=None,
+        help="Pasa el parámetro 'think' de Ollama (razonamiento nativo antes de responder). Default: no lo manda.",
+    )
     args = parser.parse_args()
     sys.exit(asyncio.run(main_async(args)))
 

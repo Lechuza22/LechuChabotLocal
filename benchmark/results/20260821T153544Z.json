@@ -1,0 +1,176 @@
+{
+  "timestamp": "20260821T153544Z",
+  "results": [
+    {
+      "name": "general_read_file",
+      "agent_id": "general",
+      "prompt": "Leé el archivo notas.txt",
+      "expected_tool": "read_file",
+      "outcomes": [
+        "read_file",
+        "read_file",
+        "read_file"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "general_remember_fact",
+      "agent_id": "general",
+      "prompt": "Recordá que mi color favorito es el verde",
+      "expected_tool": "remember_fact",
+      "outcomes": [
+        "remember_fact",
+        "remember_fact",
+        "remember_fact"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "general_weather",
+      "agent_id": "general",
+      "prompt": "¿Qué tiempo hace en Buenos Aires ahora mismo?",
+      "expected_tool": "get_weather",
+      "outcomes": [
+        "get_weather",
+        "get_weather",
+        "get_weather"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "general_directions",
+      "agent_id": "general",
+      "prompt": "¿Cuánto se tarda en auto de Palermo a Tigre?",
+      "expected_tool": "get_directions",
+      "outcomes": [
+        "get_directions",
+        "get_directions",
+        "get_directions"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_web_horarios",
+      "agent_id": "search",
+      "prompt": "Buscá en internet los horarios del Museo del Prado",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_web",
+        "search_web",
+        "search_web"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_web_capital",
+      "agent_id": "search",
+      "prompt": "Buscá en Google cuál es la capital de Mongolia",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_web",
+        "search_web",
+        "search_web"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_wikipedia_ornitorrinco",
+      "agent_id": "search",
+      "prompt": "¿Qué es un ornitorrinco? Buscalo en Wikipedia",
+      "expected_tool": "search_wikipedia",
+      "outcomes": [
+        "search_wikipedia",
+        "search_wikipedia",
+        "search_wikipedia"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_wikipedia_bolivar",
+      "agent_id": "search",
+      "prompt": "¿Quién fue Simón Bolívar? Buscalo en Wikipedia",
+      "expected_tool": "search_wikipedia",
+      "outcomes": [
+        "search_wikipedia",
+        "search_wikipedia",
+        "search_wikipedia"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "google_search_emails",
+      "agent_id": "google",
+      "prompt": "Buscá mis últimos mails de LinkedIn",
+      "expected_tool": "search_emails",
+      "outcomes": [
+        "search_emails",
+        "search_emails",
+        "search_emails"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "google_send_email",
+      "agent_id": "google",
+      "prompt": "Mandale un mail a juan@ejemplo.com contándole que llego tarde",
+      "expected_tool": "send_email",
+      "outcomes": [
+        "send_email",
+        "send_email",
+        "send_email"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "google_search_drive",
+      "agent_id": "google",
+      "prompt": "Buscá en mi Drive archivos que tengan DNI en el nombre",
+      "expected_tool": "search_drive_files",
+      "outcomes": [
+        "search_drive_files",
+        "search_drive_files",
+        "search_drive_files"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "google_calendar_event",
+      "agent_id": "google",
+      "prompt": "Creame un evento de calendario mañana a las 10 llamado Dentista",
+      "expected_tool": "manage_calendar_event",
+      "outcomes": [
+        "manage_calendar_event",
+        "get_current_time",
+        "manage_calendar_event"
+      ],
+      "passed": 2,
+      "runs": 3
+    },
+    {
+      "name": "google_calendar_relative_date",
+      "agent_id": "google",
+      "prompt": "¿Qué tengo en el calendario esta semana?",
+      "expected_tool": "get_current_time",
+      "outcomes": [
+        "get_current_time",
+        "get_current_time",
+        "get_current_time"
+      ],
+      "passed": 3,
+      "runs": 3
+    }
+  ],
+  "total_passed": 38,
+  "total_runs": 39
+}
