@@ -1,0 +1,86 @@
+{
+  "timestamp": "20260822T142013Z",
+  "think": null,
+  "results": [
+    {
+      "name": "search_web_horarios",
+      "agent_id": "search",
+      "prompt": "Buscá en internet los horarios del Museo del Prado",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_web",
+        "search_web",
+        "search_web"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_web_capital",
+      "agent_id": "search",
+      "prompt": "Buscá en Google cuál es la capital de Mongolia",
+      "expected_tool": "search_web",
+      "outcomes": [
+        "search_web",
+        "search_web",
+        "search_web"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_wikipedia_ornitorrinco",
+      "agent_id": "search",
+      "prompt": "¿Qué es un ornitorrinco? Buscalo en Wikipedia",
+      "expected_tool": "search_wikipedia",
+      "outcomes": [
+        "search_wikipedia",
+        "search_wikipedia",
+        "search_wikipedia"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_wikipedia_bolivar",
+      "agent_id": "search",
+      "prompt": "¿Quién fue Simón Bolívar? Buscalo en Wikipedia",
+      "expected_tool": "search_wikipedia",
+      "outcomes": [
+        "search_wikipedia",
+        "search_wikipedia",
+        "search_wikipedia"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_fetch_url",
+      "agent_id": "search",
+      "prompt": "Leé el contenido de https://es.wikipedia.org/wiki/Mongolia y contame de qué habla",
+      "expected_tool": "fetch_url",
+      "outcomes": [
+        "fetch_url",
+        "fetch_url",
+        "fetch_url"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "search_download_file",
+      "agent_id": "search",
+      "prompt": "Descargá el archivo de https://example.com/reporte.pdf a /Users/lechu/ChatbotSandbox/reporte.pdf",
+      "expected_tool": "download_file",
+      "outcomes": [
+        "download_file",
+        "download_file",
+        "download_file"
+      ],
+      "passed": 3,
+      "runs": 3
+    }
+  ],
+  "total_passed": 18,
+  "total_runs": 18
+}

@@ -43,6 +43,12 @@ def _resolve_and_validate(path: str) -> Path:
     )
 
 
+def validate_path(path: str) -> Path:
+    """Public entrypoint for other tool modules (e.g. web_tools.download_file) that
+    need the same whitelist check as the filesystem tools, without duplicating it."""
+    return _resolve_and_validate(path)
+
+
 def list_dir(path: str) -> dict:
     target = _resolve_and_validate(path)
     if not target.exists():

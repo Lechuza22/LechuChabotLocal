@@ -24,6 +24,10 @@ _KEYWORD_RULES: dict[str, list[str]] = {
         "buscá", "busca", "búsqueda", "busqueda", "wikipedia", "internet",
         "googlealo", "investigá", "investiga", "noticias",
     ],
+    "git": [
+        "git", "github", "gitlab", "repositorio", "repo", "clonar", "clona",
+        "clone", "push", "pull", "commit",
+    ],
 }
 
 
@@ -37,6 +41,7 @@ def _classify_with_llm(text: str, agent_ids: list[str]) -> str | None:
         "- coder: writing, debugging, or explaining code\n"
         "- google: email, calendar, or Google Drive files\n"
         "- search: looking something up online or on Wikipedia\n"
+        "- git: cloning, pulling, or pushing a git repository\n"
         "- general: anything else\n\n"
         f'Message: "{text}"\n\n'
         "Reply with just the category word, nothing else."

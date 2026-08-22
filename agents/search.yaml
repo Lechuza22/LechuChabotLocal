@@ -3,6 +3,10 @@
 # general, qwen3:8b confunde las dos 2/5 veces. Mismo criterio ya aplicado
 # con Gmail/Drive/Calendar (agents/google.yaml): menos tools compitiendo =
 # más fiable. Con estas 3 solas debería ser prácticamente perfecto.
+#
+# fetch_url/download_file sumadas después (2026-08-22, 5 tools total) -
+# verificado 18/18 vía benchmark/run_bench.py --agent search --runs 3,
+# todavía lejos del techo de 9-10. Re-benchmarkear si se agrega algo más acá.
 id: search
 name: "Asistente de búsqueda"
 model: qwen3:8b
@@ -11,8 +15,13 @@ system_prompt: |
   specialized in web and Wikipedia search. Always reply in the same language
   the user writes in. search_web already tries several phrasings of the
   query on its own and returns combined results - don't call it repeatedly
-  with manual variations yourself.
+  with manual variations yourself. Use fetch_url to actually read a page's
+  full content after search_web gives you its URL - search_web alone only
+  returns short snippets. Before downloading a file, briefly explain what
+  you're about to do - the user will be asked to confirm separately.
 tools:
   - search_web
   - search_wikipedia
+  - fetch_url
+  - download_file
   - get_current_time

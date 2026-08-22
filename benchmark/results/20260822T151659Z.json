@@ -1,0 +1,47 @@
+{
+  "timestamp": "20260822T151659Z",
+  "think": null,
+  "results": [
+    {
+      "name": "git_clone_repo",
+      "agent_id": "git",
+      "prompt": "Cloná el repositorio https://github.com/octocat/Hello-World en /Users/lechu/ChatbotSandbox/hello",
+      "expected_tool": "git_clone",
+      "outcomes": [
+        "git_clone",
+        "git_clone",
+        "git_clone"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "git_pull_repo",
+      "agent_id": "git",
+      "prompt": "Traé los últimos cambios del repo en /Users/lechu/ChatbotSandbox/hello",
+      "expected_tool": "git_pull",
+      "outcomes": [
+        "git_pull",
+        "git_pull",
+        "git_pull"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "git_push_repo",
+      "agent_id": "git",
+      "prompt": "Hacé push de los cambios del repo en /Users/lechu/ChatbotSandbox/hello",
+      "expected_tool": "git_push",
+      "outcomes": [
+        "git_push",
+        "git_push",
+        "git_push"
+      ],
+      "passed": 3,
+      "runs": 3
+    }
+  ],
+  "total_passed": 9,
+  "total_runs": 9
+}

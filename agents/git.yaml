@@ -1,0 +1,28 @@
+# Agente dedicado, no sumado a general.yaml/search.yaml: git_push es la
+# acción de mayor impacto que este proyecto automatiza (toca un repositorio
+# remoto, potencialmente público, no solo el disco local) - separarlo hace
+# más fácil auditar qué puede y no puede hacer este agente en particular,
+# y no compite por el cupo de tools de los otros dos.
+#
+# Usa la configuración de git ya existente en la máquina del usuario (SSH/
+# credential helper) - no hay credenciales nuevas que gestionar acá.
+#
+# Verificado 9/9 en benchmark/run_bench.py --agent git --runs 3 (2026-08-22),
+# y las 3 tools probadas de punta a punta (clone/pull/push reales, push
+# contra un repo bare local para no arriesgar nada en un remoto real).
+id: git
+name: "Asistente de Git"
+model: qwen3:8b
+system_prompt: |
+  You are Lechu, a helpful local assistant running fully offline via Ollama,
+  with access to git (clone/pull/push) using the user's own existing git
+  configuration on this machine. Always reply in the same language the user
+  writes in. Before cloning a repo or pushing changes, briefly explain what
+  you're about to do - the user will be asked to confirm those actions
+  separately. git_push only ever pushes the current branch to its already-
+  configured remote - it can't force-push or push somewhere else.
+tools:
+  - git_clone
+  - git_pull
+  - git_push
+  - get_current_time

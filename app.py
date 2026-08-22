@@ -635,7 +635,7 @@ def render_chat_tabs(state: AppState, refs: UIRefs, agents: dict[str, Agent]) ->
                     .on("click", lambda c=conv_id: asyncio.create_task(_switch_chat_tab(state, refs, agents, c)))
                 ui.icon("save", size="13px").classes("lechu-doc-tab-close cursor-pointer") \
                     .tooltip("Guardar esta charla como .md") \
-                    .on("click", lambda c=conv_id: asyncio.create_task(_save_chat_markdown(state, c)))
+                    .on("click", lambda c=conv_id: _save_chat_markdown(state, c))
                 ui.icon("close", size="14px").classes("lechu-doc-tab-close cursor-pointer") \
                     .on("click", lambda c=conv_id: asyncio.create_task(_close_chat_tab(state, refs, agents, c)))
 
@@ -902,6 +902,12 @@ def _summarize_tool_call(tool_name: str, args: dict) -> str:
         return f"Quiere borrar el archivo {args.get('path', '?')}"
     if tool_name == "create_folder":
         return f"Quiere crear la carpeta {args.get('path', '?')}"
+    if tool_name == "download_file":
+        return f"Quiere descargar {args.get('url', '?')} a {args.get('path', '?')}"
+    if tool_name == "git_clone":
+        return f"Quiere clonar {args.get('url', '?')} en {args.get('path', '?')}"
+    if tool_name == "git_push":
+        return f"Quiere hacer push de los cambios en {args.get('path', '?')}"
     if tool_name == "write_drive_file":
         action = "sobrescribir" if args.get("file_id") else "crear"
         return f"Quiere {action} el archivo de Drive \"{args.get('name', '?')}\""
@@ -1737,12 +1743,8 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
                     )
 
                 with ui.row().classes("items-center"):
-                    ui.button(
-                        "Actualizar por IP", on_click=lambda: asyncio.create_task(_refresh_ip())
-                    ).props("dense outline")
-                    ui.button(
-                        "Usar ubicación exacta (GPS)", on_click=lambda: asyncio.create_task(_refresh_gps())
-                    ).props("dense outline")
+                    ui.button("Actualizar por IP", on_click=_refresh_ip).props("dense outline")
+                    ui.button("Usar ubicación exacta (GPS)", on_click=_refresh_gps).props("dense outline")
 
             location_panel()
 
@@ -1780,7 +1782,7 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
 
                 with ui.row().classes("w-full items-center"):
                     ui.button("Guardar", on_click=_save_key).props("dense")
-                    ui.button("Probar conexión", on_click=lambda: asyncio.create_task(_test_key())).props("dense outline")
+                    ui.button("Probar conexión", on_click=_test_key).props("dense outline")
                     if has_key:
                         ui.button("Quitar", on_click=_remove_key).props("dense outline color=red")
 
@@ -1790,51 +1792,45 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
             ui.label("Búsqueda web").classes("font-bold text-sm")
             ui.label("Wikipedia activa vía su API pública — no requiere configuración.") \
                 .classes("text-caption text-gray-500")
-            ui.label("Google Custom Search requiere API key + Search Engine ID (cx).") \
-                .classes("text-caption text-gray-500")
+            ui.label(
+                "Búsqueda general vía Tavily (pensado para agentes de IA - Google Custom Search "
+                "está cerrado a proyectos nuevos desde 2025, así que no es una opción)."
+            ).classes("text-caption text-gray-500")
             ui.label(
                 "Cada búsqueda prueba ~3 formas distintas de preguntar (3 consultas reales) - "
-                "con el plan gratis de 100/día alcanza para ~33 búsquedas."
+                "con el plan gratis de 1000 créditos/mes alcanza para varios cientos de búsquedas."
             ).classes("text-caption text-gray-500")
 
             @ui.refreshable
             def websearch_panel() -> None:
-                has_key = (
-                    get_secret(websearch_tools.API_KEY_SECRET) is not None
-                    and get_secret(websearch_tools.CX_SECRET) is not None
-                )
+                has_key = get_secret(websearch_tools.API_KEY_SECRET) is not None
                 ui.label("🔑 Configurado" if has_key else "Sin configurar").classes("text-caption")
 
-                key_input = ui.input(placeholder="API key de Google Custom Search...") \
+                key_input = ui.input(placeholder="API key de Tavily...") \
                     .props("type=password dense").classes("w-full")
-                cx_input = ui.input(placeholder="Search Engine ID (cx)...") \
-                    .props("dense").classes("w-full")
 
                 def _save_key() -> None:
-                    if key_input.value and cx_input.value:
+                    if key_input.value:
                         set_secret(websearch_tools.API_KEY_SECRET, key_input.value)
-                        set_secret(websearch_tools.CX_SECRET, cx_input.value)
                         key_input.value = ""
-                        cx_input.value = ""
                         websearch_panel.refresh()
                         ui.notify("Búsqueda web guardada", type="positive")
 
                 def _remove_key() -> None:
                     delete_secret(websearch_tools.API_KEY_SECRET)
-                    delete_secret(websearch_tools.CX_SECRET)
                     websearch_panel.refresh()
                     ui.notify("Búsqueda web eliminada", type="positive")
 
                 async def _test_key() -> None:
                     ok = await run.io_bound(websearch_tools.test_connection)
                     ui.notify(
-                        "✅ Conexión OK" if ok else "❌ No se pudo validar la conexión (¿key/cx correctos?)",
+                        "✅ Conexión OK" if ok else "❌ No se pudo validar la conexión (¿key correcta?)",
                         type="positive" if ok else "negative",
                     )
 
                 with ui.row().classes("w-full items-center"):
                     ui.button("Guardar", on_click=_save_key).props("dense")
-                    ui.button("Probar conexión", on_click=lambda: asyncio.create_task(_test_key())).props("dense outline")
+                    ui.button("Probar conexión", on_click=_test_key).props("dense outline")
                     if has_key:
                         ui.button("Quitar", on_click=_remove_key).props("dense outline color=red")
 
@@ -1886,9 +1882,7 @@ def _open_settings_dialog(state: AppState, agents: dict[str, Agent], refs_holder
 
                 with ui.row().classes("w-full items-center"):
                     ui.button("Guardar credenciales", on_click=_save_client_config).props("dense")
-                    connect_btn = ui.button(
-                        "Conectar con Google", on_click=lambda: asyncio.create_task(_connect())
-                    ).props("dense outline")
+                    connect_btn = ui.button("Conectar con Google", on_click=_connect).props("dense outline")
                     if not has_config:
                         connect_btn.props("disable")
                     if connected_email:

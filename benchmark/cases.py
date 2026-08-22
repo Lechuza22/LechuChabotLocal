@@ -73,6 +73,37 @@ CASES: list[dict] = [
         "prompt": "¿Quién fue Simón Bolívar? Buscalo en Wikipedia",
         "expected_tool": "search_wikipedia",
     },
+    {
+        "name": "search_fetch_url",
+        "agent_id": "search",
+        "prompt": "Leé el contenido de https://es.wikipedia.org/wiki/Mongolia y contame de qué habla",
+        "expected_tool": "fetch_url",
+    },
+    {
+        "name": "search_download_file",
+        "agent_id": "search",
+        "prompt": "Descargá el archivo de https://example.com/reporte.pdf a /Users/lechu/ChatbotSandbox/reporte.pdf",
+        "expected_tool": "download_file",
+    },
+    # --- git: clone/pull/push (agente propio, ver agents/git.yaml) ---
+    {
+        "name": "git_clone_repo",
+        "agent_id": "git",
+        "prompt": "Cloná el repositorio https://github.com/octocat/Hello-World en /Users/lechu/ChatbotSandbox/hello",
+        "expected_tool": "git_clone",
+    },
+    {
+        "name": "git_pull_repo",
+        "agent_id": "git",
+        "prompt": "Traé los últimos cambios del repo en /Users/lechu/ChatbotSandbox/hello",
+        "expected_tool": "git_pull",
+    },
+    {
+        "name": "git_push_repo",
+        "agent_id": "git",
+        "prompt": "Hacé push de los cambios del repo en /Users/lechu/ChatbotSandbox/hello",
+        "expected_tool": "git_push",
+    },
     # --- google: Gmail/Drive/Calendar (Conexiones fase 2) ---
     {
         "name": "google_search_emails",
