@@ -272,7 +272,7 @@ def _describe_pending(pc: PendingConfirmation) -> str:
     return f"Quiere ejecutar {pc.tool_name}"
 
 
-async def _confirm_in_chat(container, text: str) -> bool:
+async def _confirm_in_chat(container, text: str, on_added=None) -> bool:
     """Confirm/cancel card inside the conversation; a card nobody answers
     within 10 minutes counts as a refusal so the turn can't hang forever."""
     future: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -294,6 +294,8 @@ async def _confirm_in_chat(container, text: str) -> bool:
                     ui.button("Cancelar", on_click=lambda: _resolve(False, row, text)).props("flat no-caps")
     except RuntimeError:
         return False
+    if on_added:
+        on_added()
     try:
         return await asyncio.wait_for(future, timeout=600)
     except asyncio.TimeoutError:
@@ -432,8 +434,35 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                         ui.button(icon="delete_outline", on_click=lambda c=old["id"]: _forget(c)).props("flat round dense size=xs") \
                             .on("click.stop", lambda: None)
 
-    with ui.column().classes("w-full gap-2").style("height: calc(100vh - 190px)"):
-        scroll = ui.scroll_area().classes("w-full grow")
+    follow = {"bottom": True, "last": 0.0}  # is the reader at the end of the conversation?
+
+    def _on_scroll(event) -> None:
+        follow["bottom"] = (event.vertical_size - event.vertical_position - event.vertical_container_size) < 60
+        if follow["bottom"]:
+            _ignoring_deleted(new_btn.set_visibility, False)
+
+    with ui.column().classes("w-full gap-2").style("height: calc(100vh - 190px); position: relative"):
+        scroll = ui.scroll_area(on_scroll=_on_scroll).classes("w-full grow")
+        new_btn = ui.button("Mensaje nuevo", icon="arrow_downward",
+                            on_click=lambda: (scroll.scroll_to(percent=1.0), new_btn.set_visibility(False), follow.update(bottom=True))) \
+            .props("unelevated rounded no-caps color=primary size=sm") \
+            .style("position:absolute; bottom:64px; left:50%; transform:translateX(-50%); z-index:10; box-shadow:0 2px 8px rgba(0,0,0,.25)")
+        new_btn.set_visibility(False)
+
+        def _follow(force: bool = False, throttle: bool = True) -> None:
+            """Keep the newest text in view while the reader is at the bottom;
+            if they scrolled up to read something, don't move them - offer the
+            "Mensaje nuevo" button instead. `force` = they just sent something."""
+            if force or follow["bottom"]:
+                tick = time.monotonic()
+                if force or not throttle or tick - follow["last"] > 0.12:
+                    follow["last"] = tick
+                    _ignoring_deleted(lambda: scroll.scroll_to(percent=1.0))
+                follow["bottom"] = True
+                _ignoring_deleted(new_btn.set_visibility, False)
+            else:
+                _ignoring_deleted(new_btn.set_visibility, True)
+
         with scroll:
             container = ui.column().classes("w-full gap-2")
             with container:
@@ -446,6 +475,8 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                     elif msg["role"] == "assistant" and msg.get("content"):
                         with ui.chat_message(name="Lechu", avatar=MARK):
                             ui.markdown(msg["content"])
+
+        ui.timer(0.25, lambda: scroll.scroll_to(percent=1.0), once=True)
 
         async def _send() -> None:
             text = (box.value or "").strip()
@@ -465,7 +496,7 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                 ui.chat_message(text, sent=True, name="Vos")
                 with ui.chat_message(name="Lechu", avatar=MARK):
                     md = ui.markdown("_Pensando…_")
-            scroll.scroll_to(percent=1.0)
+            _follow(force=True)
             failed: dict = {}
             answer = ""
             try:
@@ -474,12 +505,13 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                     async for piece in chunks:
                         answer += piece
                         _ignoring_deleted(md.set_content, answer)
+                        _follow()
                     result = result_box["result"]
                     if isinstance(result, Continue):
                         answer = ""
                         continue
                     if isinstance(result, PendingConfirmation):
-                        approved = await _confirm_in_chat(container, _describe_pending(result))
+                        approved = await _confirm_in_chat(container, _describe_pending(result), on_added=_follow)
                         if approved:
                             outcome = await run.io_bound(execute_tool, result.tool_name, result.args)
                         else:
@@ -494,6 +526,7 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                     answer = "Me detuve después de demasiadas consultas. Probá con un pedido más simple."
                     messages.append({"role": "assistant", "content": answer})
                 _ignoring_deleted(md.set_content, answer or "_(sin respuesta)_")
+                _follow(throttle=False)
             except httpx.HTTPError as exc:
                 _ignoring_deleted(md.set_content, f"No pude contactar a Ollama: {exc}")
             except Exception as exc:  # noqa: BLE001
@@ -504,7 +537,7 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                 _ignoring_deleted(send_btn.enable)
                 if turn_start == 1 and answer:
                     asyncio.create_task(_auto_title(text, answer))
-                _ignoring_deleted(lambda: scroll.scroll_to(percent=1.0))
+                _follow(throttle=False)
 
         async def _auto_title(first_user: str, first_answer: str) -> None:
             suggested = await _summarize_title(first_user, first_answer)
