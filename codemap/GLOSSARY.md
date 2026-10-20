@@ -29,3 +29,13 @@ Un modelo más un prompt y una lista acotada de tools.
 Recordatorio con `repeat` diario o semanal que se reprograma solo al dispararse.
 
 **En este proyecto:** `reminders.pop_due` calcula el próximo horario futuro.
+
+### pipeline
+Secuencia de pasos que se ejecutan en orden, donde cada uno recibe lo que produjeron los anteriores.
+
+**En este proyecto:** una tarea de LechuPasto declara sus pasos en `task.yaml` (traer agenda, traer mails, resumir).
+
+### headless
+Un programa con interfaz gráfica que corre sin mostrar ventana.
+
+**En este proyecto:** `render.py` usa Chrome headless para convertir el reporte HTML en una imagen.

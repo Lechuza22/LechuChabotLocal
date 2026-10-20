@@ -1,0 +1,22 @@
+#!/bin/bash
+set -uo pipefail
+
+PROJECT_DIR="/Users/lechu/Projects/Chatbot"
+VENV="$PROJECT_DIR/.venv"
+LOG="$PROJECT_DIR/data/lechupasto_launcher.log"
+
+mkdir -p "$PROJECT_DIR/data"
+echo "--- $(date) ---" >> "$LOG"
+
+if [ ! -x "$VENV/bin/python3" ]; then
+    osascript -e "display dialog \"No encuentro el entorno virtual del proyecto en $VENV.\" with title \"LechuPasto\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1
+    exit 1
+fi
+
+# The tasks' summaries use the local model: start Ollama if it isn't running.
+if ! curl -s -o /dev/null --max-time 2 http://localhost:11434/api/version; then
+    command -v ollama >/dev/null 2>&1 && nohup ollama serve >> "$LOG" 2>&1 &
+fi
+
+cd "$PROJECT_DIR" || exit 1
+exec "$VENV/bin/python3" lechupasto/app.py >> "$LOG" 2>&1

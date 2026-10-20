@@ -7,3 +7,7 @@ data/lechu_launcher.log
 data/reminders.db
 data/lechu_daemon.log
 data/briefing_state.json
+
+# LechuPasto: generated runs (reports, screenshots, metadata)
+lechupasto/tasks/*/runs/
+data/lechupasto_launcher.log

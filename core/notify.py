@@ -52,6 +52,30 @@ def notify_telegram(message: str) -> bool:
         return False
 
 
+def notify_telegram_file(path, caption: str = "", as_document: bool = False) -> bool:
+    """Send an image (sendPhoto) or any file (sendDocument) through the bot.
+    Photos get compressed by Telegram and must be <=10000px (width+height);
+    use as_document for taller captures. False when no bot is configured."""
+    token = get_secret(TELEGRAM_TOKEN_KEY)
+    chat_id = get_secret(TELEGRAM_CHAT_KEY)
+    if not token or not chat_id:
+        return False
+    method, field = ("sendDocument", "document") if as_document else ("sendPhoto", "photo")
+    try:
+        with open(path, "rb") as fh:
+            resp = httpx.post(
+                f"https://api.telegram.org/bot{token}/{method}",
+                data={"chat_id": chat_id, "caption": caption[:1000]},
+                files={field: (str(path).rsplit("/", 1)[-1], fh)},
+                timeout=60.0,
+            )
+        resp.raise_for_status()
+        return True
+    except (httpx.HTTPError, OSError) as exc:
+        logger.warning("Telegram file upload failed: %s", type(exc).__name__)
+        return False
+
+
 def notify(title: str, message: str) -> None:
     notify_macos(title, message)
     notify_telegram(f"{title}\n{message}")

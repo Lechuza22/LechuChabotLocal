@@ -1,0 +1,92 @@
+"""Builds the HTML report for a task run: phone-width (480px) so the same file
+reads well in the app's iframe, a browser, and as a Telegram screenshot."""
+
+from __future__ import annotations
+
+import html
+import re
+from pathlib import Path
+
+from lechupasto.render import HEIGHT_PROBE
+
+MARK_SVG = (Path(__file__).parent / "assets" / "lechupasto_mark.svg").read_text(encoding="utf-8")
+
+_CSS = """
+:root { --brown:#a5693a; --brown-dark:#774c2a; --cream:#faf4ec; --ink:#34363c; --muted:#7a7068; --line:#eadfce; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--cream); color:var(--ink); width:480px;
+  font:15px/1.45 -apple-system, "Helvetica Neue", Arial, sans-serif; }
+header { background:var(--brown); color:#fff; padding:18px 20px; display:flex; align-items:center; gap:14px; }
+header svg { width:46px; height:46px; flex:none; background:#fff; border-radius:12px; padding:3px; }
+header h1 { margin:0; font-size:19px; line-height:1.2; }
+header p { margin:2px 0 0; font-size:12.5px; opacity:.85; }
+main { padding:6px 20px 18px; }
+section { padding:14px 0 4px; border-bottom:1px solid var(--line); }
+section:last-child { border-bottom:none; }
+h2 { margin:0 0 8px; font-size:12px; letter-spacing:.09em; text-transform:uppercase; color:var(--brown-dark); }
+ul { margin:0; padding:0; list-style:none; }
+li { padding:7px 0; border-top:1px solid var(--line); }
+li:first-child { border-top:none; }
+.time { display:inline-block; min-width:78px; font-weight:700; color:var(--brown-dark); }
+.empty { color:var(--muted); font-style:italic; margin:4px 0 10px; }
+.warn { background:#fff3d6; border-left:4px solid #e8a33d; padding:8px 10px; border-radius:4px; margin:4px 0 10px; }
+footer { padding:10px 20px 16px; font-size:11.5px; color:var(--muted); }
+"""
+
+
+_BULLET = re.compile(r"^[-*•]\s+")
+
+
+def _inline(text: str) -> str:
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html.escape(text))
+
+
+def markdown_to_html(text: str) -> str:
+    """Tiny converter for what the local model emits: bullets and **bold**."""
+    items, paras = [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if _BULLET.match(line):
+            items.append("<li>" + _inline(_BULLET.sub("", line)) + "</li>")
+        else:
+            paras.append(f"<p>{_inline(line)}</p>")
+    return "".join(paras) + (f"<ul>{''.join(items)}</ul>" if items else "")
+
+
+def render_section(section: dict) -> str:
+    kind, title = section["kind"], html.escape(section["title"])
+    if kind == "events":
+        body = section["data"]
+        if body is None:
+            inner = '<div class="warn">No pude leer el calendario. Reconectá Google en Lechu.</div>'
+        elif not body:
+            inner = '<p class="empty">Sin eventos hoy.</p>'
+        else:
+            rows = []
+            for event in body:
+                start = event.get("start") or ""
+                when = start[11:16] if "T" in start else "Todo el día"
+                place = f" <span style='color:var(--muted)'>· {html.escape(event['location'])}</span>" if event.get("location") else ""
+                rows.append(f"<li><span class='time'>{when}</span>{html.escape(event.get('title') or '(sin título)')}{place}</li>")
+            inner = f"<ul>{''.join(rows)}</ul>"
+    else:  # text
+        data = section["data"]
+        if data is None:
+            inner = '<div class="warn">No pude leer los mails. Reconectá Google en Lechu.</div>'
+        elif not data:
+            inner = '<p class="empty">Sin mails nuevos.</p>'
+        else:
+            inner = markdown_to_html(data)
+    return f"<section><h2>{title}</h2>{inner}</section>"
+
+
+def build_report_html(title: str, subtitle: str, sections: list[dict], footer: str) -> str:
+    body = "".join(render_section(s) for s in sections)
+    return (
+        "<!doctype html><html lang='es'><head><meta charset='utf-8'>"
+        f"<meta name='viewport' content='width=480'><title>{html.escape(title)}</title><style>{_CSS}</style></head><body>"
+        f"<header>{MARK_SVG.split('?>', 1)[-1]}<div><h1>{html.escape(title)}</h1><p>{html.escape(subtitle)}</p></div></header>"
+        f"<main>{body}</main><footer>{html.escape(footer)}</footer>{HEIGHT_PROBE}</body></html>"
+    )

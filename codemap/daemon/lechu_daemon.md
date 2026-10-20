@@ -7,6 +7,7 @@ flowchart TD
     main --> tick
     tick --> pop_due[reminders.pop_due]
     tick --> notify[notify.notify]
+    main --> run_due_tasks[engine.run_due_tasks]
 ```
 
 ## Funciones
@@ -15,7 +16,7 @@ flowchart TD
 Pide los recordatorios vencidos y notifica cada uno con el título "Lechu Recordatorio".
 
 ### `main()`
-Bucle infinito: `tick()` y espera `POLL_SECONDS` (20). Una excepción en un ciclo se registra y no mata el proceso.
+Bucle infinito: `tick()` y `engine.run_due_tasks()` y espera `POLL_SECONDS` (20). Una excepción en un ciclo se registra y no mata el proceso.
 
 ## Instalación
 

@@ -1,0 +1,19 @@
+id: morning-briefing
+name: Resumen matutino
+description: Agenda del día y mails de ayer (el lunes, desde el sábado), resumidos por el modelo local.
+schedule:
+  days: [mon, tue, wed, thu, fri]
+  time: "09:00"
+# Pipeline: the code fetches the data, only llm_summarize uses the model.
+steps:
+  - {id: events, type: calendar_events}
+  - {id: emails, type: emails}
+  - {id: email_summary, type: llm_summarize, input: emails}
+report:
+  title: "Resumen del {weekday} {day} de {month}"
+  subtitle: "LechuPasto · Resumen matutino"
+  sections:
+    - {title: "Agenda de hoy", kind: events, from: events}
+    - {title: "Mails de {since} ({emails_count})", kind: text, from: email_summary}
+deliver:
+  telegram: image
