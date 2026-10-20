@@ -30,7 +30,7 @@ from config import CONFIG  # noqa: E402
 from core.agents import load_agents  # noqa: E402
 from core.llm import OllamaClient  # noqa: E402
 from core.tool_loop import Continue, PendingConfirmation, execute_tool, step_agent_stream  # noqa: E402
-from core import agenda, reminders as reminder_store  # noqa: E402
+from core import agenda, matrix as matrix_store, reminders as reminder_store  # noqa: E402
 from lechupasto import chats, engine  # noqa: E402
 
 PORT = 8001
@@ -598,15 +598,140 @@ def _when_text(due_at: str) -> str:
     return f"{_WEEKDAYS_ES[due.weekday()]} {due.strftime('%d/%m %H:%M')}"
 
 
+# Quadrant look: (header color, body color)
+_MATRIX_STYLE = {
+    "urgent": ("#c0392b", "#fdeceb"),
+    "not_urgent": ("#2e7d32", "#eaf5ea"),
+    "postpone": ("#3f6fb5", "#e9eff9"),
+    "late": ("#c26a14", "#fdf0df"),
+}
+_MATRIX_ORDER = ["urgent", "not_urgent", "postpone", "late"]
+
+
+def _matrix_board() -> None:
+    """Priority matrix: type an item, it lands in "Sin clasificar", drag it into
+    a quadrant (or between quadrants, or reorder). Every drop is saved."""
+    item_ids: dict[str, int] = {}      # element id -> database id
+    containers: dict[str, ui.column] = {}
+    counts: dict[str, ui.label] = {}
+
+    def _persist(_event=None) -> None:
+        """Save the whole board as it looks on screen (all five containers)."""
+        for key, container in containers.items():
+            ids = [item_ids[child.id] for child in container.default_slot.children if child.id in item_ids]
+            matrix_store.set_order(key, ids)
+            counts[key].set_text(str(len(ids)))
+
+    def _edit(item: dict) -> None:
+        with ui.dialog() as dialog, ui.card().style("width: 480px; max-width: 92vw"):
+            ui.label("Editar ítem").classes("text-lg font-bold")
+            field = ui.input(value=item["text"]).props("outlined dense autofocus").classes("w-full")
+
+            def _save() -> None:
+                if (field.value or "").strip():
+                    matrix_store.update_text(item["id"], field.value)
+                dialog.close()
+                board.refresh()
+
+            def _delete() -> None:
+                matrix_store.delete(item["id"])
+                dialog.close()
+                board.refresh()
+
+            field.on("keydown.enter", _save)
+            with ui.row().classes("w-full justify-between"):
+                ui.button("Borrar", icon="delete_outline", on_click=_delete).props("flat no-caps color=negative")
+                with ui.row().classes("gap-2"):
+                    ui.button("Cancelar", on_click=dialog.close).props("flat no-caps")
+                    ui.button("Guardar", on_click=_save).props("unelevated no-caps color=primary")
+        dialog.open()
+
+    def _done(item: dict) -> None:
+        matrix_store.complete(item["id"])
+        board.refresh()
+        ui.notify("Listo ✔", type="positive", timeout=1200)
+
+    def _item_card(item: dict) -> None:
+        card = ui.card().props("flat bordered").classes("w-full").style("padding: 4px 8px; background:#fff; border-radius:8px")
+        item_ids[card.id] = item["id"]
+        with card:
+            with ui.row().classes("w-full items-center no-wrap gap-1"):
+                ui.icon("drag_indicator", size="18px").classes("drag-handle cursor-move text-grey-6")
+                ui.label(item["text"]).classes("grow cursor-pointer text-sm").style("word-break: break-word") \
+                    .on("click", lambda _e, i=item: _edit(i))
+                ui.button(icon="check", on_click=lambda i=item: _done(i)).props("flat round dense size=sm color=positive").tooltip("Hecho")
+
+    @ui.refreshable
+    def board() -> None:
+        item_ids.clear()
+        containers.clear()
+        grouped = matrix_store.list_open()
+
+        def _lane(key: str, min_height: int) -> None:
+            lane = ui.column().classes("w-full gap-1").style(f"min-height: {min_height}px")
+            # forceFallback: drag with mouse events instead of the browser's native
+            # drag-and-drop, which is flaky inside embedded macOS web views.
+            lane.make_sortable(group="matrix", handle=".drag-handle", on_end=_persist, animation=0.15,
+                               options={"forceFallback": True, "fallbackTolerance": 3})
+            containers[key] = lane
+            with lane:
+                for item in grouped.get(key, []):
+                    _item_card(item)
+
+        # inbox tray
+        with ui.card().props("flat bordered").classes("w-full").style("background:#fbf8f3; border-radius:12px; border:2px dashed #c9b79c"):
+            with ui.row().classes("items-center gap-2"):
+                ui.label("Sin clasificar").classes("font-bold text-sm")
+                counts["inbox"] = ui.label(str(len(grouped["inbox"]))).classes("text-xs text-grey-7")
+                ui.label("— los ítems nuevos caen acá; arrastralos a un cuadrante").classes("text-xs text-grey-6")
+            _lane("inbox", 48)
+
+        with ui.grid(columns=2).classes("w-full gap-3"):
+            for key in _MATRIX_ORDER:
+                header, body = _MATRIX_STYLE[key]
+                with ui.card().props("flat").classes("w-full").style(
+                        f"background:{body}; border-radius:12px; border-top: 5px solid {header}; padding: 8px 10px"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label(matrix_store.QUADRANTS[key]).classes("font-bold").style(f"color:{header}")
+                        counts[key] = ui.label(str(len(grouped[key]))).classes("text-xs text-grey-7")
+                    _lane(key, 130)
+
+    with ui.row().classes("w-full items-center no-wrap gap-2").style("background:#fff; border-radius:12px; padding:10px"):
+        field = ui.input(placeholder="Nuevo ítem… (Enter para agregar)").props("outlined dense").classes("grow")
+
+        def _add() -> None:
+            text = (field.value or "").strip()
+            if not text:
+                return
+            matrix_store.add_item(text)
+            field.value = ""
+            board.refresh()
+
+        field.on("keydown.enter", _add)
+        ui.button("Agregar", icon="add", on_click=_add).props("unelevated no-caps color=primary")
+    ui.space().classes("h-2")
+    board()
+
+
 def _reminders_screen(nav: dict) -> None:
     _back_button(nav, "home", "Inicio")
     ui.label("Recordatorios y notas").classes("text-xl font-bold")
     ui.label("Lo que cargues acá lo ve el chat, y lo que el chat cree aparece acá. Los recordatorios avisan por notificación "
              "y Telegram aunque la app esté cerrada.").classes("text-sm text-grey-7")
 
-    with ui.tabs().classes("w-full") as tabs:
+    def _tab_changed(event) -> None:
+        # The matrix must be built while its tab is on screen: SortableJS looks up
+        # its containers once, when mounted, and a hidden tab panel has no DOM yet.
+        # Rebuilt on every visit too, since leaving the tab destroys that DOM.
+        if event.value in ("Matriz", tab_matrix):
+            matrix_holder.clear()
+            with matrix_holder:
+                _matrix_board()
+
+    with ui.tabs(on_change=_tab_changed).classes("w-full") as tabs:
         tab_rem = ui.tab("Recordatorios")
         tab_notes = ui.tab("Notas")
+        tab_matrix = ui.tab("Matriz")
 
     @ui.refreshable
     def reminder_list() -> None:
@@ -691,6 +816,8 @@ def _reminders_screen(nav: dict) -> None:
             ui.button("Nueva nota", icon="note_add", on_click=lambda: _note_dialog(None, refresh_all)).props("unelevated no-caps color=primary")
             ui.space().classes("h-3")
             notes_list()
+        with ui.tab_panel(tab_matrix).classes("p-0 pt-3"):
+            matrix_holder = ui.column().classes("w-full gap-0")
 
     # The chat (or Lechu) can add/remove items while this screen is open.
     seen = {"sig": reminder_store.signature()}
@@ -926,6 +1053,10 @@ def index() -> None:
     .q-message-text--sent:last-child:before { border-left-color: #ead9c3 !important; }
     """)
     ui.query("body").style("background:#fbf8f3")
+    # NiceGUI only ships the drag-and-drop library (SortableJS) to the browser if a
+    # sortable exists when the page loads; the priority matrix is built later, when
+    # its tab opens, so register the library with a hidden placeholder.
+    ui.column().classes("hidden").make_sortable()
     nav: dict = {"view": "home", "task": None}
     chat: dict = {"msgs": {}, "active": None, "busy": False}
 
