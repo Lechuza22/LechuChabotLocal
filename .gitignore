@@ -12,3 +12,4 @@ data/briefing_state.json
 lechupasto/tasks/*/runs/
 data/lechupasto_launcher.log
 lechupasto/tasks/_pedidos/
+data/pasto_chats.db

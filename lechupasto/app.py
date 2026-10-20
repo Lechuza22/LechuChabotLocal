@@ -14,7 +14,7 @@ import re
 import subprocess
 import sys
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -27,7 +27,8 @@ from config import CONFIG  # noqa: E402
 from core.agents import load_agents  # noqa: E402
 from core.llm import OllamaClient  # noqa: E402
 from core.tool_loop import Continue, PendingConfirmation, step_agent_stream  # noqa: E402
-from lechupasto import engine  # noqa: E402
+from core import reminders as reminder_store  # noqa: E402
+from lechupasto import chats, engine  # noqa: E402
 
 PORT = 8001
 HERE = Path(__file__).resolve().parent
@@ -109,6 +110,7 @@ def _home(nav: dict) -> None:
         with ui.row().classes("gap-6 justify-center"):
             _card("chat", "Chat", "Consultas sobre tus mails, agenda y Drive", lambda: _go(nav, "chat"), big=True)
             _card("task_alt", "Tareas", "Reportes programados y su historial", lambda: _go(nav, "tasks"), big=True)
+            _card("alarm", "Recordatorios", "Avisos programados y notas", lambda: _go(nav, "reminders"), big=True)
 
 
 def _tasks_menu(nav: dict) -> None:
@@ -222,19 +224,103 @@ def _task_screen(nav: dict, task: engine.Task) -> None:
     view()
 
 
+def _ignoring_deleted(fn, *args) -> None:
+    """UI updates can target elements already destroyed (user navigated away
+    while an answer was streaming); the turn must still finish and be saved."""
+    try:
+        fn(*args)
+    except RuntimeError:
+        pass
+
+
+def _chat_messages(chat: dict, chat_id: int) -> list[dict]:
+    """In-memory message list of a conversation (system slot first), loaded
+    from the database the first time it's needed."""
+    if chat_id not in chat["msgs"]:
+        chat["msgs"][chat_id] = [{"role": "system", "content": ""}] + chats.load_messages(chat_id)
+    return chat["msgs"][chat_id]
+
+
 def _chat_screen(nav: dict, chat: dict) -> None:
     agent = load_agents(HERE / "agents")["pasto_chat"]
-    _back_button(nav, "home", "Inicio")
+    open_tabs = chats.open_chats()
+    if not open_tabs:
+        chat["active"] = chats.create_chat()
+        open_tabs = chats.open_chats()
+    if chat.get("active") not in {c["id"] for c in open_tabs}:
+        chat["active"] = open_tabs[-1]["id"]
+    active = chat["active"]
+    messages = _chat_messages(chat, active)
 
-    with ui.column().classes("w-full gap-2").style("height: calc(100vh - 150px)"):
+    def _guard_busy() -> bool:
+        if chat["busy"]:
+            ui.notify("Esperá a que termine la respuesta actual", type="warning")
+        return chat["busy"]
+
+    def _switch(chat_id: int) -> None:
+        if not _guard_busy():
+            chat["active"] = chat_id
+            nav["refresh"]()
+
+    def _new() -> None:
+        if not _guard_busy():
+            chat["active"] = chats.create_chat()
+            nav["refresh"]()
+
+    def _close(chat_id: int) -> None:
+        if _guard_busy():
+            return
+        chats.close_chat(chat_id)
+        chat["msgs"].pop(chat_id, None)
+        nav["refresh"]()
+
+    def _reopen(chat_id: int) -> None:
+        if not _guard_busy():
+            chats.reopen_chat(chat_id)
+            chat["active"] = chat_id
+            nav["refresh"]()
+
+    def _forget(chat_id: int) -> None:
+        chats.delete_chat(chat_id)
+        chat["msgs"].pop(chat_id, None)
+        nav["refresh"]()
+
+    with ui.row().classes("w-full items-center gap-2"):
+        _back_button(nav, "home", "Inicio")
+        ui.element("div").classes("grow")
+    tab_labels: dict[int, ui.label] = {}
+    with ui.row().classes("w-full items-center gap-1 no-wrap").style("overflow-x: auto"):
+        for tab in open_tabs:
+            is_active = tab["id"] == active
+            with ui.row().classes("items-center no-wrap gap-0").style(
+                "border-radius: 8px 8px 0 0; padding: 0 2px 0 10px; "
+                + ("background:#fff; border-bottom: 3px solid #a5693a" if is_active else "background:#f1e8da")
+            ):
+                tab_labels[tab["id"]] = ui.label(tab["title"]).classes("text-sm cursor-pointer whitespace-nowrap")                     .style("max-width: 190px; overflow: hidden; text-overflow: ellipsis")                     .on("click", lambda _e, c=tab["id"]: _switch(c))
+                ui.button(icon="close", on_click=lambda c=tab["id"]: _close(c)).props("flat round dense size=xs")
+        ui.button(icon="add", on_click=_new).props("flat round dense").tooltip("Nuevo chat")
+        archived = chats.archived_chats()
+        with ui.button(icon="history").props("flat round dense").tooltip("Chats anteriores"):
+            with ui.menu():
+                if not archived:
+                    ui.menu_item("No hay chats anteriores").props("disable")
+                for old in archived:
+                    stamp = datetime.fromisoformat(old["updated_at"]).strftime("%d/%m")
+                    with ui.menu_item(on_click=lambda c=old["id"]: _reopen(c)):
+                        ui.label(f"{old['title']}  ·  {stamp}").classes("text-sm")
+                        ui.space()
+                        ui.button(icon="delete_outline", on_click=lambda c=old["id"]: _forget(c)).props("flat round dense size=xs") \
+                            .on("click.stop", lambda: None)
+
+    with ui.column().classes("w-full gap-2").style("height: calc(100vh - 190px)"):
         scroll = ui.scroll_area().classes("w-full grow")
         with scroll:
             container = ui.column().classes("w-full gap-2")
             with container:
-                if len(chat["messages"]) <= 1:
+                if len(messages) <= 1:
                     ui.label("Preguntame por tus mails, tu agenda o tu Drive. Por ejemplo: «¿qué eventos tengo esta semana?» "
-                             "o «¿quién me escribió hoy?». También puedo dejarte recordatorios.").classes("text-grey-6 text-sm")
-                for msg in chat["messages"]:
+                             "o «¿quién me escribió hoy?». También puedo dejarte recordatorios y guardar notas.").classes("text-grey-6 text-sm")
+                for msg in messages:
                     if msg["role"] == "user":
                         ui.chat_message(msg["content"], sent=True, name="Vos")
                     elif msg["role"] == "assistant" and msg.get("content"):
@@ -249,9 +335,13 @@ def _chat_screen(nav: dict, chat: dict) -> None:
             chat["busy"] = True
             send_btn.disable()
             now = datetime.now().astimezone()
-            chat["messages"][0] = {"role": "system", "content":
-                                   f"{agent.system_prompt}\n\nCurrent date and time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzname()})."}
-            chat["messages"].append({"role": "user", "content": text})
+            messages[0] = {"role": "system", "content":
+                           f"{agent.system_prompt}\n\nCurrent date and time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzname()})."}
+            turn_start = len(messages)
+            messages.append({"role": "user", "content": text})
+            if turn_start == 1:  # first message names the tab
+                title = chats.set_title_from(active, text)
+                _ignoring_deleted(tab_labels[active].set_text, title)
             with container:
                 ui.chat_message(text, sent=True, name="Vos")
                 with ui.chat_message(name="Lechu", avatar=MARK):
@@ -261,34 +351,170 @@ def _chat_screen(nav: dict, chat: dict) -> None:
             answer = ""
             try:
                 for _ in range(CONFIG.max_tool_iterations):
-                    chunks, result_box = await step_agent_stream(_ollama(), agent, chat["messages"], failed)
+                    chunks, result_box = await step_agent_stream(_ollama(), agent, messages, failed)
                     async for piece in chunks:
                         answer += piece
-                        md.set_content(answer)
+                        _ignoring_deleted(md.set_content, answer)
                     result = result_box["result"]
                     if isinstance(result, Continue):
                         answer = ""
                         continue
                     if isinstance(result, PendingConfirmation):
-                        answer = "Esa acción necesita confirmación y desde acá solo puedo consultar. Hacela desde Lechu."
-                        chat["messages"].append({"role": "assistant", "content": answer})
+                        answer = "Esa acción necesita confirmación y desde acá no puedo hacerla. Hacela desde Lechu."
+                        messages.append({"role": "assistant", "content": answer})
                     break
                 else:
                     answer = "Me detuve después de demasiadas consultas. Probá con un pedido más simple."
-                    chat["messages"].append({"role": "assistant", "content": answer})
-                md.set_content(answer or "_(sin respuesta)_")
+                    messages.append({"role": "assistant", "content": answer})
+                _ignoring_deleted(md.set_content, answer or "_(sin respuesta)_")
             except httpx.HTTPError as exc:
-                md.set_content(f"No pude contactar a Ollama: {exc}")
+                _ignoring_deleted(md.set_content, f"No pude contactar a Ollama: {exc}")
             except Exception as exc:  # noqa: BLE001
-                md.set_content(f"Error inesperado: {type(exc).__name__}: {exc}")
+                _ignoring_deleted(md.set_content, f"Error inesperado: {type(exc).__name__}: {exc}")
             finally:
+                await run.io_bound(chats.append_messages, active, messages[turn_start:])
                 chat["busy"] = False
-                send_btn.enable()
-                scroll.scroll_to(percent=1.0)
+                _ignoring_deleted(send_btn.enable)
+                _ignoring_deleted(scroll.scroll_to, 1.0)
 
         with ui.row().classes("w-full no-wrap items-center gap-2"):
             box = ui.input(placeholder="Escribí tu consulta…").props("outlined dense").classes("grow").on("keydown.enter", _send)
             send_btn = ui.button(icon="send", on_click=_send).props("round dense unelevated color=primary")
+
+
+def _note_dialog(note: dict | None, on_done) -> None:
+    """Create (note=None) or edit a note: title + long body."""
+    with ui.dialog() as dialog, ui.card().style("width: 640px; max-width: 92vw"):
+        ui.label("Nueva nota" if note is None else "Editar nota").classes("text-lg font-bold")
+        title = ui.input("Título", value=(note or {}).get("title", "")).props("outlined dense").classes("w-full")
+        body = ui.textarea("Contenido", value=(note or {}).get("body", "")).props("outlined input-style='min-height: 220px'").classes("w-full")
+
+        def _save() -> None:
+            if not (title.value or "").strip():
+                ui.notify("La nota necesita un título", type="warning")
+                return
+            if note is None:
+                reminder_store.add_note(title.value.strip(), (body.value or "").strip())
+            else:
+                reminder_store.update_note(note["id"], title.value.strip(), (body.value or "").strip())
+            dialog.close()
+            on_done()
+
+        def _delete() -> None:
+            reminder_store.cancel_reminder(note["id"])
+            dialog.close()
+            on_done()
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            if note is not None:
+                ui.button("Borrar", icon="delete_outline", on_click=_delete).props("flat no-caps color=negative")
+            ui.button("Cancelar", on_click=dialog.close).props("flat no-caps")
+            ui.button("Guardar", icon="save", on_click=_save).props("unelevated no-caps color=primary")
+    dialog.open()
+
+
+_WEEKDAYS_ES = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+
+
+def _when_text(due_at: str) -> str:
+    due = datetime.strptime(due_at, reminder_store.TIME_FORMAT)
+    return f"{_WEEKDAYS_ES[due.weekday()]} {due.strftime('%d/%m %H:%M')}"
+
+
+def _reminders_screen(nav: dict) -> None:
+    _back_button(nav, "home", "Inicio")
+    ui.label("Recordatorios y notas").classes("text-xl font-bold")
+    ui.label("Lo que cargues acá lo ve el chat, y lo que el chat cree aparece acá. Los recordatorios avisan por notificación "
+             "y Telegram aunque la app esté cerrada.").classes("text-sm text-grey-7")
+
+    with ui.tabs().classes("w-full") as tabs:
+        tab_rem = ui.tab("Recordatorios")
+        tab_notes = ui.tab("Notas")
+
+    @ui.refreshable
+    def reminder_list() -> None:
+        pending = reminder_store.list_pending()
+        if not pending:
+            ui.label("No hay recordatorios pendientes.").classes("text-grey-6 text-sm")
+        repeat_text = {"daily": "todos los días", "weekly": "todas las semanas"}
+        for item in pending:
+            with ui.row().classes("w-full items-center no-wrap gap-3").style("background:#fff; border-radius:10px; padding:8px 12px"):
+                ui.label(_when_text(item["due_at"])) \
+                    .classes("font-bold text-sm").style("min-width: 120px; color:#774c2a")
+                ui.label(item["message"]).classes("grow")
+                if item["repeat"] in repeat_text:
+                    ui.chip(repeat_text[item["repeat"]], icon="repeat").props("dense outline")
+                ui.button(icon="delete_outline", on_click=lambda i=item["id"]: (reminder_store.cancel_reminder(i), refresh_all())) \
+                    .props("flat round dense").tooltip("Borrar")
+        fired = reminder_store.list_fired(8)
+        if fired:
+            with ui.expansion("Ya avisados", icon="history").classes("w-full text-grey-7"):
+                for item in fired:
+                    ui.label(f"{item['due_at'][5:16].replace('-', '/', 1)} · {item['message']}").classes("text-sm text-grey-7")
+
+    @ui.refreshable
+    def notes_list() -> None:
+        notes = reminder_store.list_notes()
+        if not notes:
+            ui.label("Todavía no hay notas.").classes("text-grey-6 text-sm")
+        with ui.row().classes("gap-4 flex-wrap"):
+            for note in notes:
+                with ui.card().classes("cursor-pointer hover:shadow-lg").style("width: 300px; min-height: 120px; border-radius: 12px; background:#fff") \
+                        .on("click", lambda n=note: _note_dialog(n, refresh_all)):
+                    ui.label(note["title"]).classes("font-bold")
+                    ui.label(note["body"] or "(sin contenido)").classes("text-sm text-grey-7") \
+                        .style("display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; white-space:pre-line")
+                    ui.label(note["updated_at"][:16]).classes("text-xs text-grey-5")
+
+    def refresh_all() -> None:
+        reminder_list.refresh()
+        notes_list.refresh()
+
+    with ui.tab_panels(tabs, value=tab_rem).classes("w-full bg-transparent"):
+        with ui.tab_panel(tab_rem).classes("p-0 pt-3"):
+            with ui.row().classes("w-full items-end gap-3").style("background:#fff; border-radius:12px; padding:12px"):
+                message = ui.input("Recordame…", placeholder="Ej: llamar al contador").props("outlined dense").classes("grow").style("min-width: 240px")
+                soon = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                date = ui.input("Fecha", value=soon.strftime("%Y-%m-%d")).props("outlined dense type=date")
+                time_in = ui.input("Hora", value=soon.strftime("%H:%M")).props("outlined dense type=time")
+                repeat = ui.select({"none": "No se repite", "daily": "Todos los días", "weekly": "Todas las semanas"}, value="none") \
+                    .props("outlined dense")
+
+                def _add() -> None:
+                    if not (message.value or "").strip():
+                        ui.notify("Escribí qué querés que te recuerde", type="warning")
+                        return
+                    try:
+                        due = reminder_store.parse_when(f"{date.value} {time_in.value}")
+                    except ValueError:
+                        ui.notify("Fecha u hora inválida", type="warning")
+                        return
+                    if due <= datetime.now() and repeat.value == "none":
+                        ui.notify("Esa fecha y hora ya pasaron", type="warning")
+                        return
+                    reminder_store.add_reminder(message.value.strip(), due, repeat.value)
+                    message.value = ""
+                    refresh_all()
+                    ui.notify("Recordatorio guardado", type="positive")
+
+                ui.button("Agregar", icon="add", on_click=_add).props("unelevated no-caps color=primary")
+            ui.space().classes("h-3")
+            reminder_list()
+        with ui.tab_panel(tab_notes).classes("p-0 pt-3"):
+            ui.button("Nueva nota", icon="note_add", on_click=lambda: _note_dialog(None, refresh_all)).props("unelevated no-caps color=primary")
+            ui.space().classes("h-3")
+            notes_list()
+
+    # The chat (or Lechu) can add/remove items while this screen is open.
+    seen = {"sig": reminder_store.signature()}
+
+    def _poll() -> None:
+        current = reminder_store.signature()
+        if current != seen["sig"]:
+            seen["sig"] = current
+            refresh_all()
+
+    ui.timer(3.0, _poll)
 
 
 # ---------------------------------------------------------------- page
@@ -304,7 +530,7 @@ def index() -> None:
     """)
     ui.query("body").style("background:#fbf8f3")
     nav: dict = {"view": "home", "task": None}
-    chat: dict = {"messages": [{"role": "system", "content": ""}], "busy": False}
+    chat: dict = {"msgs": {}, "active": None, "busy": False}
 
     with ui.row().classes("w-full items-center gap-3 cursor-pointer").on("click", lambda: _go(nav, "home")):
         ui.image(MARK).classes("w-10 h-10")
@@ -321,6 +547,8 @@ def index() -> None:
             _task_screen(nav, engine.load_tasks()[nav["task"]])
         elif view == "chat":
             _chat_screen(nav, chat)
+        elif view == "reminders":
+            _reminders_screen(nav)
         else:
             _home(nav)
 

@@ -1,33 +1,12 @@
 # core/tools/reminder_tools.py
 
-Expone los recordatorios al modelo como tres tools registradas en `TOOL_REGISTRY`.
+Expone recordatorios y notas al modelo como tools registradas en `TOOL_REGISTRY`.
 
-```mermaid
-flowchart TD
-    set_reminder --> parse_when
-    set_reminder --> add_reminder
-    list_reminders --> list_pending
-    cancel_reminder --> reminders_cancel[reminders.cancel_reminder]
-```
+- `set_reminder(message, when, repeat)`: valida formato, rechaza horarios pasados (salvo repetitivos) y guarda.
+- `add_note(title, body)`: guarda una nota (sin fecha, nunca avisa).
+- `list_reminders()`: devuelve `{"reminders": [...], "notes": [...]}` con ids; el contenido de las notas se recorta a 400 caracteres.
+- `cancel_reminder(match=None, reminder_id=None)`: cancela o borra por palabras del texto (preferido) o por id. Si varias coinciden, devuelve la lista para que el modelo le pregunte al usuario; si ninguna, un error que lo manda a `list_reminders`.
 
-## Tools
-
-### `set_reminder(message, when, repeat="none")`
-Valida `repeat` y el formato de `when`, rechaza horarios ya pasados (salvo repetitivos) y guarda. Devuelve el registro o `{"error": ...}`. El mensaje de error le indica al modelo que use `get_current_time`.
-
-### `list_reminders()`
-Devuelve `{"reminders": [...]}` con los pendientes.
-
-### `cancel_reminder(reminder_id)`
-Cancela por id. Devuelve `{"cancelled": id}` o un error.
-
-Ninguna requiere confirmación: son acciones locales y reversibles.
-
-## Dependencias
-
-| Tipo | Detalle |
-|---|---|
-| Proyecto | `core.reminders`, `core.tools` (`Tool`, `register`) |
-| Usada por | `agents/reminders.yaml` |
+Ninguna requiere confirmación: son acciones locales y reversibles. Las usan `agents/reminders.yaml` (Lechu) y el chat de LechuPasto.
 
 Términos: [GLOSSARY](../../GLOSSARY.md)

@@ -13,7 +13,7 @@ from typing import Callable
 import httpx
 
 from config import CONFIG
-from core import briefing, mail_context
+from core import briefing, mail_context, reminders
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,16 @@ def unread_older(now: datetime, params: dict, ctx: dict):
             date = ""
         items.append({"from": _sender_name(hit.get("from")), "subject": hit.get("subject") or "(sin asunto)", "date": date})
     return items
+
+
+def today_items(now: datetime, params: dict, ctx: dict):
+    """Reminders still pending for today (earlier ones already fired) and the
+    user's saved notes. Falsy when there is nothing, so the section hides."""
+    upcoming = reminders.due_today(now)
+    notes = reminders.list_notes()
+    if not upcoming and not notes:
+        return {}
+    return {"reminders": upcoming, "notes": notes}
 
 
 def email_digest(now: datetime, params: dict, ctx: dict):
@@ -145,6 +155,7 @@ def llm_summarize_digest(now: datetime, params: dict, ctx: dict):
 STEP_CATALOG: dict[str, Callable] = {
     "calendar_events": calendar_events,
     "emails": emails,
+    "today_items": today_items,
     "unread_older": unread_older,
     "email_digest": email_digest,
     "commented_docs": commented_docs,

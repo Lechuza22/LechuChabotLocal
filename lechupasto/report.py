@@ -33,6 +33,7 @@ li:first-child { border-top:none; }
 .badge { display:inline-block; background:#fff3d6; color:#8a5a00; font-size:11.5px; padding:1px 8px; border-radius:10px; margin-left:4px; white-space:nowrap; }
 .quote { margin:4px 0 0 10px; padding-left:8px; border-left:3px solid var(--line); font-size:13px; color:var(--muted); }
 a { color:var(--brown-dark); text-decoration:none; }
+.notes { margin:8px 0 10px; color:var(--muted); font-size:13.5px; }
 .empty { color:var(--muted); font-style:italic; margin:4px 0 10px; }
 .warn { background:#fff3d6; border-left:4px solid #e8a33d; padding:8px 10px; border-radius:4px; margin:4px 0 10px; }
 footer { padding:10px 20px 16px; font-size:11.5px; color:var(--muted); }
@@ -76,6 +77,21 @@ def render_section(section: dict) -> str:
                 place = f" <span style='color:var(--muted)'>· {html.escape(event['location'])}</span>" if event.get("location") else ""
                 rows.append(f"<li><span class='time'>{when}</span>{html.escape(event.get('title') or '(sin título)')}{place}</li>")
             inner = f"<ul>{''.join(rows)}</ul>"
+    elif kind == "today":
+        data = section["data"] or {}
+        parts = []
+        if data.get("reminders"):
+            rows = "".join(
+                f"<li><span class='time'>{html.escape(r['due_at'][11:16])}</span>{html.escape(r['message'])}</li>"
+                for r in data["reminders"]
+            )
+            parts.append(f"<ul>{rows}</ul>")
+        notes = data.get("notes") or []
+        if notes:
+            shown = ", ".join(f"<strong>{html.escape(n['title'])}</strong>" for n in notes[:6])
+            more = f" y {len(notes) - 6} más" if len(notes) > 6 else ""
+            parts.append(f"<p class='notes'>Notas guardadas ({len(notes)}): {shown}{more}</p>")
+        inner = "".join(parts)
     elif kind == "mails":
         items = section["data"] or []
         shown = items[:MAILS_SHOWN]

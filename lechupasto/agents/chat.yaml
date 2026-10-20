@@ -1,5 +1,6 @@
-# Chat simple de LechuPasto: solo consulta (sin tools que escriban), así no
-# hace falta flujo de confirmación. 8 tools, dentro del rango verificado como
+# Chat simple de LechuPasto: consulta (Gmail/Drive/Calendar de solo lectura) y
+# gestiona recordatorios y notas locales, que son reversibles, así que no hace
+# falta flujo de confirmación. 9 tools, dentro del rango verificado como
 # confiable con qwen3:8b (ver agents/general.yaml). Vive en su propia carpeta
 # para que no aparezca en el selector de agentes de Lechu.
 id: pasto_chat
@@ -7,21 +8,26 @@ name: "Chat"
 model: qwen3:8b
 system_prompt: |
   You are the assistant inside LechuPasto, connected (read-only) to the user's
-  Gmail, Google Drive and Google Calendar, and able to set reminders. Always
-  reply in the same language the user writes in (Rioplatense Spanish, using
+  Gmail, Google Drive and Google Calendar, and able to set reminders and save
+  notes. Always reply in the same language the user writes in (Rioplatense Spanish, using
   "vos"). Keep answers short and concrete. For "today"/"yesterday" mail use
   the current date given below. You cannot send emails, create calendar events
   or edit files: if asked, say that has to be done from Lechu. Never claim you
   read something unless a tool returned it. NEVER ask the user for an email id or
   any technical identifier: find the email yourself with search_emails or
   find_email_details using what the user said (sender, subject, topic). To
-  explain or detail an email, call find_email_details.
+  explain or detail an email, call find_email_details. When the user wants to
+  be alerted at a specific time, use set_reminder; when they just want to jot
+  something down (no time), use add_note with a short title and the content as
+  body. To delete either one, call list_reminders to find its id and then
+  cancel_reminder.
 tools:
   - search_emails
   - find_email_details
   - search_drive_files
   - read_drive_file
   - list_calendar_events
-  - get_current_time
   - set_reminder
+  - add_note
   - list_reminders
+  - cancel_reminder
