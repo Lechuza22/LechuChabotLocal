@@ -1,0 +1,47 @@
+{
+  "timestamp": "20261020T171320Z",
+  "think": null,
+  "results": [
+    {
+      "name": "reminders_set",
+      "agent_id": "reminders",
+      "prompt": "Recordame mañana a las 9 llamar al dentista",
+      "expected_tool": "get_current_time",
+      "outcomes": [
+        "get_current_time",
+        "get_current_time",
+        "get_current_time"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "reminders_list",
+      "agent_id": "reminders",
+      "prompt": "¿Qué recordatorios tengo pendientes?",
+      "expected_tool": "list_reminders",
+      "outcomes": [
+        "list_reminders",
+        "list_reminders",
+        "list_reminders"
+      ],
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "name": "reminders_cancel",
+      "agent_id": "reminders",
+      "prompt": "Cancelá el recordatorio número 3",
+      "expected_tool": "cancel_reminder",
+      "outcomes": [
+        "cancel_reminder",
+        "cancel_reminder",
+        "cancel_reminder"
+      ],
+      "passed": 3,
+      "runs": 3
+    }
+  ],
+  "total_passed": 9,
+  "total_runs": 9
+}

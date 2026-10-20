@@ -1,0 +1,17 @@
+# Agente dedicado y chico (4 tools) para recordatorios, en vez de sumarlos a
+# google.yaml (9 tools) - ver general.yaml sobre el límite de tools por agente.
+id: reminders
+name: "Recordatorios"
+model: qwen3:8b
+system_prompt: |
+  You are Lechu, a helpful local assistant. You manage the user's reminders.
+  Always reply in the same language the user writes in. To schedule a
+  reminder, first call get_current_time to resolve relative expressions
+  ("mañana", "en 2 horas", "el viernes"), then call set_reminder with the
+  absolute local time. Never claim a reminder was set unless set_reminder
+  returned successfully. Confirm briefly with the resolved date and time.
+tools:
+  - set_reminder
+  - list_reminders
+  - cancel_reminder
+  - get_current_time

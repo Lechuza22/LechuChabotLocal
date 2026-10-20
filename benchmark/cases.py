@@ -139,4 +139,23 @@ CASES: list[dict] = [
         "prompt": "¿Qué tengo en el calendario esta semana?",
         "expected_tool": "get_current_time",
     },
+    # --- reminders: dedicated agent (4 tools) ---
+    {
+        "name": "reminders_set",
+        "agent_id": "reminders",
+        "prompt": "Recordame mañana a las 9 llamar al dentista",
+        "expected_tool": "get_current_time",
+    },
+    {
+        "name": "reminders_list",
+        "agent_id": "reminders",
+        "prompt": "¿Qué recordatorios tengo pendientes?",
+        "expected_tool": "list_reminders",
+    },
+    {
+        "name": "reminders_cancel",
+        "agent_id": "reminders",
+        "prompt": "Cancelá el recordatorio número 3",
+        "expected_tool": "cancel_reminder",
+    },
 ]

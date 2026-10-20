@@ -4,3 +4,5 @@ __pycache__/
 data/memory.db
 data/lechu_launcher.log
 .DS_Store
+data/reminders.db
+data/lechu_daemon.log

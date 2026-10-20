@@ -20,6 +20,10 @@ _KEYWORD_RULES: dict[str, list[str]] = {
         "mail", "correo", "gmail", "calendario", "evento", "reunión", "reunion",
         "drive", "agenda", "invitá", "invita", "meeting",
     ],
+    "reminders": [
+        "recordatorio", "recordatorios", "recordame", "recordarme", "recordanos",
+        "avisame", "avisarme", "alarma",
+    ],
     "search": [
         "buscá", "busca", "búsqueda", "busqueda", "wikipedia", "internet",
         "googlealo", "investigá", "investiga", "noticias",
@@ -40,6 +44,7 @@ def _classify_with_llm(text: str, agent_ids: list[str]) -> str | None:
         f"Classify this user message into exactly one category: {options}.\n"
         "- coder: writing, debugging, or explaining code\n"
         "- google: email, calendar, or Google Drive files\n"
+        "- reminders: setting, listing, or cancelling a timed reminder or alarm\n"
         "- search: looking something up online or on Wikipedia\n"
         "- git: cloning, pulling, or pushing a git repository\n"
         "- general: anything else\n\n"
