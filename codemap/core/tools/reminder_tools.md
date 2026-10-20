@@ -10,3 +10,7 @@ Expone recordatorios y notas al modelo como tools registradas en `TOOL_REGISTRY`
 Ninguna requiere confirmación: son acciones locales y reversibles. Las usan `agents/reminders.yaml` (Lechu) y el chat de LechuPasto.
 
 Términos: [GLOSSARY](../../GLOSSARY.md)
+
+## agenda_tools.py
+
+`add_calendar_event(title, start, duration_minutes, location, notes)`: agenda un evento en Google Calendar e invita siempre al usuario (el modelo no puede indicar invitados). **Requiere confirmación**: el chat de LechuPasto muestra una tarjeta Confirmar/Cancelar antes de ejecutarla. Rechaza horarios pasados.

@@ -47,3 +47,4 @@ from core.tools import websearch_tools as _websearch_tools  # noqa: E402,F401
 from core.tools import web_tools as _web_tools  # noqa: E402,F401
 from core.tools import git_tools as _git_tools  # noqa: E402,F401
 from core.tools import reminder_tools as _reminder_tools  # noqa: E402,F401
+from core.tools import agenda_tools as _agenda_tools  # noqa: E402,F401

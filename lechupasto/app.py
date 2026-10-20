@@ -10,12 +10,14 @@ Run:  python3 lechupasto/app.py   (LECHUPASTO_DEV=1 serves in a browser instead 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import subprocess
 import sys
+import time
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -27,8 +29,8 @@ import core.tools  # noqa: E402,F401  (registers every tool the chat agent can u
 from config import CONFIG  # noqa: E402
 from core.agents import load_agents  # noqa: E402
 from core.llm import OllamaClient  # noqa: E402
-from core.tool_loop import Continue, PendingConfirmation, step_agent_stream  # noqa: E402
-from core import reminders as reminder_store  # noqa: E402
+from core.tool_loop import Continue, PendingConfirmation, execute_tool, step_agent_stream  # noqa: E402
+from core import agenda, reminders as reminder_store  # noqa: E402
 from lechupasto import chats, engine  # noqa: E402
 
 PORT = 8001
@@ -86,7 +88,7 @@ def _run_label(task: engine.Task, run_id: str) -> str:
 # ---------------------------------------------------------------- cards
 
 def _card(icon: str, title: str, subtitle: str, on_click, dashed: bool = False, big: bool = False) -> None:
-    size = "width: 300px; height: 190px" if big else "width: 270px; height: 160px"
+    size = "width: 238px; height: 180px" if big else "width: 270px; height: 160px"
     border = "border: 2px dashed #c9b79c; background: transparent" if dashed else "background: #fff"
     with ui.card().classes("cursor-pointer items-center justify-center text-center gap-1 hover:shadow-lg transition-shadow") \
             .style(f"{size}; {border}; border-radius: 16px").on("click", on_click):
@@ -113,6 +115,7 @@ def _home(nav: dict) -> None:
             _card("chat", "Chat", "Consultas sobre tus mails, agenda y Drive", lambda: _go(nav, "chat"), big=True)
             _card("task_alt", "Tareas", "Reportes programados y su historial", lambda: _go(nav, "tasks"), big=True)
             _card("alarm", "Recordatorios", "Avisos programados y notas", lambda: _go(nav, "reminders"), big=True)
+            _card("calendar_month", "Agenda", "Tu calendario y eventos con invitación", lambda: _go(nav, "agenda"), big=True)
 
 
 def _tasks_menu(nav: dict) -> None:
@@ -249,6 +252,65 @@ async def _summarize_title(user_text: str, answer: str) -> str | None:
     lines = (reply.get("content") or "").strip().splitlines()
     title = re.sub(r"^[\"'«“\s]+|[\"'»”.\s]+$", "", lines[0]) if lines else ""
     return title[:48] or None
+
+
+_DAYS_FULL_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+
+def _describe_pending(pc: PendingConfirmation) -> str:
+    if pc.tool_name == "add_calendar_event":
+        try:
+            start = datetime.strptime(str(pc.args.get("start", "")).replace("T", " ")[:16], "%Y-%m-%d %H:%M")
+            end = start + timedelta(minutes=int(pc.args.get("duration_minutes") or agenda.DEFAULT_MINUTES))
+            when = f"el {_DAYS_FULL_ES[start.weekday()]} {start.strftime('%d/%m')} de {start.strftime('%H:%M')} a {end.strftime('%H:%M')}"
+        except ValueError:
+            when = f"el {pc.args.get('start', '?')}"
+        where = f" en {pc.args['location']}" if pc.args.get("location") else ""
+        guest = agenda.invite_email()
+        invite = f" y enviar la invitación a {guest}" if guest else ""
+        return f"Quiere agendar «{pc.args.get('title', '?')}» {when}{where}{invite}"
+    return f"Quiere ejecutar {pc.tool_name}"
+
+
+async def _confirm_in_chat(container, text: str) -> bool:
+    """Confirm/cancel card inside the conversation; a card nobody answers
+    within 10 minutes counts as a refusal so the turn can't hang forever."""
+    future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    def _resolve(approved: bool, row, note) -> None:
+        if future.done():
+            return
+        row.clear()
+        with row:
+            ui.label("✅ Confirmado" if approved else "❌ Cancelado").classes("text-sm text-grey-7")
+        future.set_result(approved)
+
+    try:
+        with container:
+            with ui.card().style("background:#fff7e6; border-left: 4px solid #e8a33d; max-width: 560px"):
+                ui.label(text).classes("font-medium")
+                with ui.row() as row:
+                    ui.button("Confirmar", on_click=lambda: _resolve(True, row, text)).props("unelevated no-caps color=primary")
+                    ui.button("Cancelar", on_click=lambda: _resolve(False, row, text)).props("flat no-caps")
+    except RuntimeError:
+        return False
+    try:
+        return await asyncio.wait_for(future, timeout=600)
+    except asyncio.TimeoutError:
+        return False
+
+
+def _system_context(prompt: str, now: datetime) -> str:
+    """The agent prompt plus the live clock and a table of the next two weeks:
+    the 8B model gets "next Thursday" wrong without it (said Wednesday)."""
+    upcoming = []
+    for offset in range(14):
+        day = now + timedelta(days=offset)
+        label = "hoy" if offset == 0 else "mañana" if offset == 1 else ""
+        upcoming.append(f"{_DAYS_FULL_ES[day.weekday()]} {day.strftime('%Y-%m-%d')}" + (f" ({label})" if label else ""))
+    return (f"{prompt}\n\nCurrent date and time: {now.strftime('%Y-%m-%d %H:%M')} ({now.tzname()}).\n"
+            f"Calendar of the next days (use it to resolve weekday names): {'; '.join(upcoming)}.\n"
+            "When the user gives an hour like \"a las 9\" or \"a las 15\", the minutes are :00 - never copy the minutes of the current time.")
 
 
 def _chat_messages(chat: dict, chat_id: int) -> list[dict]:
@@ -393,8 +455,7 @@ def _chat_screen(nav: dict, chat: dict) -> None:
             chat["busy"] = True
             send_btn.disable()
             now = datetime.now().astimezone()
-            messages[0] = {"role": "system", "content":
-                           f"{agent.system_prompt}\n\nCurrent date and time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzname()})."}
+            messages[0] = {"role": "system", "content": _system_context(agent.system_prompt, now)}
             turn_start = len(messages)
             messages.append({"role": "user", "content": text})
             if turn_start == 1:  # first message names the tab
@@ -418,8 +479,16 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                         answer = ""
                         continue
                     if isinstance(result, PendingConfirmation):
-                        answer = "Esa acción necesita confirmación y desde acá no puedo hacerla. Hacela desde Lechu."
-                        messages.append({"role": "assistant", "content": answer})
+                        approved = await _confirm_in_chat(container, _describe_pending(result))
+                        if approved:
+                            outcome = await run.io_bound(execute_tool, result.tool_name, result.args)
+                        else:
+                            outcome = {"error": "El usuario rechazó esta acción."}
+                        messages.append({"role": "tool", "tool_call_id": result.tool_call_id,
+                                         "content": json.dumps(outcome, ensure_ascii=False)})
+                        answer = ""
+                        _ignoring_deleted(md.set_content, "_Pensando…_")
+                        continue  # the model now reports the outcome
                     break
                 else:
                     answer = "Me detuve después de demasiadas consultas. Probá con un pedido más simple."
@@ -554,8 +623,9 @@ def _reminders_screen(nav: dict) -> None:
                 time_in = ui.input("Hora", value=soon.strftime("%H:%M")).props("outlined dense type=time")
                 repeat = ui.select({"none": "No se repite", "daily": "Todos los días", "weekly": "Todas las semanas"}, value="none") \
                     .props("outlined dense")
+                to_calendar = ui.checkbox("Agregar también al calendario")
 
-                def _add() -> None:
+                async def _add() -> None:
                     if not (message.value or "").strip():
                         ui.notify("Escribí qué querés que te recuerde", type="warning")
                         return
@@ -567,10 +637,19 @@ def _reminders_screen(nav: dict) -> None:
                     if due <= datetime.now() and repeat.value == "none":
                         ui.notify("Esa fecha y hora ya pasaron", type="warning")
                         return
-                    reminder_store.add_reminder(message.value.strip(), due, repeat.value)
+                    text = message.value.strip()
+                    reminder_store.add_reminder(text, due, repeat.value)
                     message.value = ""
                     refresh_all()
                     ui.notify("Recordatorio guardado", type="positive")
+                    if to_calendar.value:
+                        try:
+                            created = await run.io_bound(agenda.create_event, text, due, 30)
+                            _AGENDA_CACHE.clear()
+                            ui.notify("También quedó en el calendario" + (f" e invitación enviada a {created['invited']}" if created["invited"] else ""),
+                                      type="positive")
+                        except Exception as exc:  # noqa: BLE001 - the reminder itself is already saved
+                            ui.notify(f"El recordatorio se guardó, pero no pude agregarlo al calendario ({type(exc).__name__})", type="warning")
 
                 ui.button("Agregar", icon="add", on_click=_add).props("unelevated no-caps color=primary")
             ui.space().classes("h-3")
@@ -590,6 +669,216 @@ def _reminders_screen(nav: dict) -> None:
             refresh_all()
 
     ui.timer(3.0, _poll)
+
+
+# ---------------------------------------------------------------- agenda
+
+_AGENDA_CACHE: dict = {}  # first-of-month -> (fetched_at, events)
+_AGENDA_TTL = 120
+
+
+def _month_days(first: date) -> list[date]:
+    start = first - timedelta(days=first.weekday())
+    nxt = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    last = nxt - timedelta(days=1)
+    end = last + timedelta(days=6 - last.weekday())
+    return [start + timedelta(days=i) for i in range((end - start).days + 1)]
+
+
+def _shift_month(first: date, delta: int) -> date:
+    index = first.year * 12 + first.month - 1 + delta
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _event_dialog(prefill: date, on_done) -> None:
+    soon = datetime.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    guest = agenda.invite_email()
+    with ui.dialog() as dialog, ui.card().style("width: 560px; max-width: 94vw"):
+        ui.label("Agendar evento").classes("text-lg font-bold")
+        title = ui.input("Título").props("outlined dense autofocus").classes("w-full")
+        with ui.row().classes("w-full no-wrap gap-3"):
+            day = ui.input("Fecha", value=prefill.strftime("%Y-%m-%d")).props("outlined dense type=date").classes("grow")
+            start = ui.input("Hora", value=soon.strftime("%H:%M")).props("outlined dense type=time").classes("grow")
+            length = ui.select({30: "30 min", 60: "1 hora", 90: "1 h 30", 120: "2 horas", 180: "3 horas"}, value=60, label="Duración") \
+                .props("outlined dense").classes("grow")
+        place = ui.input("Lugar (opcional)").props("outlined dense").classes("w-full")
+        notes = ui.textarea("Notas (opcional)").props("outlined dense rows=3").classes("w-full")
+        ui.label(f"Se enviará la invitación a {guest}" if guest else "No hay un mail de invitación configurado: el evento se crea sin invitado.") \
+            .classes("text-xs text-grey-7")
+
+        async def _save() -> None:
+            if not (title.value or "").strip():
+                ui.notify("Poné un título", type="warning")
+                return
+            try:
+                begin = datetime.strptime(f"{day.value} {start.value}", "%Y-%m-%d %H:%M")
+            except ValueError:
+                ui.notify("Fecha u hora inválida", type="warning")
+                return
+            save_btn.disable()
+            try:
+                created = await run.io_bound(agenda.create_event, title.value.strip(), begin, int(length.value),
+                                             (place.value or "").strip() or None, (notes.value or "").strip() or None)
+            except agenda.NotConnected:
+                ui.notify("Google no está conectado (Lechu > Configuración > Conexiones)", type="negative")
+                save_btn.enable()
+                return
+            except Exception as exc:  # noqa: BLE001
+                ui.notify(f"No pude crear el evento: {type(exc).__name__}", type="negative")
+                save_btn.enable()
+                return
+            _AGENDA_CACHE.clear()
+            dialog.close()
+            ui.notify("Evento agendado" + (f" · invitación enviada a {created['invited']}" if created["invited"] else ""), type="positive")
+            await on_done()
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancelar", on_click=dialog.close).props("flat no-caps")
+            save_btn = ui.button("Agendar", icon="event_available", on_click=_save).props("unelevated no-caps color=primary")
+    dialog.open()
+
+
+def _agenda_screen(nav: dict) -> None:
+    st = {"month": date.today().replace(day=1), "events": None, "error": None, "loading": True}
+    _back_button(nav, "home", "Inicio")
+
+    async def load(force: bool = False) -> None:
+        first = st["month"]
+        days = _month_days(first)
+        cached = _AGENDA_CACHE.get(first)
+        if cached and not force and time.time() - cached[0] < _AGENDA_TTL:
+            st["events"], st["error"], st["loading"] = cached[1], None, False
+            grid.refresh()
+            return
+        st["loading"] = True
+        grid.refresh()
+        try:
+            events = await run.io_bound(agenda.month_events, days[0], days[-1])
+            _AGENDA_CACHE[first] = (time.time(), events)
+            st["events"], st["error"] = events, None
+        except agenda.NotConnected:
+            st["events"], st["error"] = [], "Google no está conectado: conectalo desde Lechu (Configuración > Conexiones)."
+        except Exception as exc:  # noqa: BLE001
+            st["events"], st["error"] = [], f"No pude leer el calendario ({type(exc).__name__}). Probá sincronizar de nuevo."
+        st["loading"] = False
+        grid.refresh()
+
+    async def go(delta: int | None) -> None:
+        st["month"] = date.today().replace(day=1) if delta is None else _shift_month(st["month"], delta)
+        await load()
+
+    def _items_by_day() -> dict[date, list[dict]]:
+        by_day: dict[date, list[dict]] = {}
+        for event in st["events"] or []:
+            for day in agenda.days_of(event):
+                label = "" if event["all_day"] else event["start"].strftime("%H:%M")
+                by_day.setdefault(day, []).append({"kind": "event", "time": label, "title": event["title"], "event": event})
+        for rem in reminder_store.list_pending():
+            due = datetime.strptime(rem["due_at"], reminder_store.TIME_FORMAT)
+            by_day.setdefault(due.date(), []).append({"kind": "reminder", "time": due.strftime("%H:%M"), "title": rem["message"]})
+        for items in by_day.values():
+            items.sort(key=lambda i: (i["time"] != "", i["time"]))
+        return by_day
+
+    def _day_dialog(day: date, items: list[dict]) -> None:
+        with ui.dialog() as dialog, ui.card().style("width: 560px; max-width: 94vw"):
+            ui.label(f"{_DAYS_FULL_ES[day.weekday()].capitalize()} {day.day} de {_MONTHS[day.month - 1]}").classes("text-lg font-bold")
+            if not items:
+                ui.label("No hay nada este día.").classes("text-grey-6 text-sm")
+            for item in items:
+                if item["kind"] == "reminder":
+                    with ui.row().classes("w-full items-center no-wrap gap-2"):
+                        ui.icon("notifications", color="amber-8", size="18px")
+                        ui.label(f"{item['time']}  {item['title']}").classes("grow text-sm")
+                        ui.label("recordatorio").classes("text-xs text-grey-6")
+                    continue
+                event = item["event"]
+                with ui.card().classes("w-full").props("flat bordered").style("padding: 8px 12px"):
+                    with ui.row().classes("w-full items-center no-wrap gap-2"):
+                        when = "Todo el día" if event["all_day"] else f"{event['start'].strftime('%H:%M')} – {event['end'].strftime('%H:%M')}"
+                        ui.label(when).classes("font-bold text-sm").style("min-width: 110px; color:#774c2a")
+                        ui.label(event["title"]).classes("grow")
+                    if event["location"]:
+                        ui.label(f"📍 {event['location']}").classes("text-xs text-grey-7")
+                    if event["guests"]:
+                        ui.label("Invitados: " + ", ".join(event["guests"])).classes("text-xs text-grey-7")
+                    with ui.row().classes("gap-1"):
+                        if event["link"]:
+                            ui.button("Abrir en Google", icon="open_in_new", on_click=lambda link=event["link"]: webbrowser.open(link)) \
+                                .props("flat dense no-caps size=sm")
+                        ui.button("Borrar", icon="delete_outline", on_click=lambda e=event: _confirm_delete(e, dialog)) \
+                            .props("flat dense no-caps size=sm color=negative")
+            with ui.row().classes("w-full justify-between"):
+                ui.button("Agendar este día", icon="add", on_click=lambda: (dialog.close(), _event_dialog(day, load))) \
+                    .props("unelevated no-caps color=primary")
+                ui.button("Cerrar", on_click=dialog.close).props("flat no-caps")
+        dialog.open()
+
+    def _confirm_delete(event: dict, parent) -> None:
+        with ui.dialog() as dialog, ui.card():
+            ui.label(f"¿Borrar «{event['title']}» del calendario?").classes("font-bold")
+            ui.label("Si tiene invitados, también se les avisa de la cancelación.").classes("text-sm text-grey-7")
+
+            async def _do() -> None:
+                dialog.close()
+                try:
+                    await run.io_bound(agenda.delete_event, event["id"])
+                except Exception as exc:  # noqa: BLE001
+                    ui.notify(f"No pude borrarlo: {type(exc).__name__}", type="negative")
+                    return
+                parent.close()
+                _AGENDA_CACHE.clear()
+                ui.notify("Evento borrado", type="positive")
+                await load(force=True)
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancelar", on_click=dialog.close).props("flat no-caps")
+                ui.button("Borrar", icon="delete", on_click=_do).props("unelevated no-caps color=negative")
+        dialog.open()
+
+    @ui.refreshable
+    def grid() -> None:
+        first = st["month"]
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.button(icon="chevron_left", on_click=lambda: go(-1)).props("flat round dense")
+            ui.label(f"{_MONTHS[first.month - 1].capitalize()} {first.year}").classes("text-xl font-bold").style("min-width: 190px; text-align: center")
+            ui.button(icon="chevron_right", on_click=lambda: go(1)).props("flat round dense")
+            ui.button("Hoy", on_click=lambda: go(None)).props("flat dense no-caps")
+            ui.button(icon="sync", on_click=lambda: load(force=True)).props("flat round dense").tooltip("Sincronizar con Google Calendar")
+            ui.element("div").classes("grow")
+            ui.button("Agendar evento", icon="add", on_click=lambda: _event_dialog(date.today(), load)).props("unelevated no-caps color=primary")
+        if st["error"]:
+            ui.label(st["error"]).classes("text-sm").style("background:#fff3d6; padding:8px 12px; border-radius:8px")
+        if st["loading"]:
+            ui.linear_progress(show_value=False).props("indeterminate color=primary").classes("w-full")
+        by_day = _items_by_day()
+        today = date.today()
+        with ui.grid(columns=7).classes("w-full gap-1"):
+            for name in ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]:
+                ui.label(name).classes("text-xs font-bold text-grey-7 text-center")
+            for day in _month_days(first):
+                items = by_day.get(day, [])
+                in_month = day.month == first.month
+                bg = "#ffffff" if in_month else "#f3eee6"
+                border = "2px solid #a5693a" if day == today else "1px solid #eadfce"
+                with ui.column().classes("gap-0 cursor-pointer hover:shadow-md").style(
+                        f"min-height: 104px; background:{bg}; border:{border}; border-radius:8px; padding:4px 6px; overflow:hidden") \
+                        .on("click", lambda _e, d=day, it=items: _day_dialog(d, it)):
+                    ui.label(str(day.day)).classes("text-xs font-bold").style(
+                        "color:" + ("#a5693a" if day == today else "#34363c" if in_month else "#b8afa3"))
+                    for item in items[:3]:
+                        chip_bg = "#fff1cc" if item["kind"] == "reminder" else "#ead9c3"
+                        prefix = "🔔 " if item["kind"] == "reminder" else ""
+                        ui.label(f"{prefix}{item['time']} {item['title']}".strip()).classes("text-xs").style(
+                            f"background:{chip_bg}; border-radius:4px; padding:0 4px; margin-top:2px; white-space:nowrap; "
+                            "overflow:hidden; text-overflow:ellipsis; max-width:100%")
+                    if len(items) > 3:
+                        ui.label(f"+{len(items) - 3} más").classes("text-xs text-grey-7")
+        ui.label("Eventos de Google Calendar (marrón) y tus recordatorios (amarillo). Tocá un día para ver el detalle.") \
+            .classes("text-xs text-grey-6")
+
+    grid()
+    ui.timer(0.1, load, once=True)
 
 
 # ---------------------------------------------------------------- page
@@ -628,6 +917,8 @@ def index() -> None:
             _chat_screen(nav, chat)
         elif view == "reminders":
             _reminders_screen(nav)
+        elif view == "agenda":
+            _agenda_screen(nav)
         else:
             _home(nav)
 

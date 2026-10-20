@@ -18,6 +18,7 @@ graph LR
     daemon --> engine[lechupasto/engine.py]
     pasto[lechupasto/app.py UI] --> engine
     pasto --> chats[lechupasto/chats.py]
+    pasto --> agenda[core/agenda.py]
     pasto --> reminders
     steps --> reminders
     engine --> steps[lechupasto/steps.py]
@@ -38,6 +39,7 @@ Flujo de un recordatorio: el usuario pide "recordame..." en el chat, el router e
   - [core/reminders.py](core/reminders.md)
   - [core/notify.py](core/notify.md)
   - [core/mail_context.py](core/mail_context.md)
+  - [core/agenda.py](core/agenda.md)
   - tools: [reminder_tools.py](core/tools/reminder_tools.md)
 - daemon: [lechu_daemon.py](daemon/lechu_daemon.md)
 - lechupasto: [chats.py](lechupasto/chats.md), [engine.py](lechupasto/engine.md), [steps / render / report](lechupasto/steps_render_report.md), [app.py](lechupasto/app.md)
