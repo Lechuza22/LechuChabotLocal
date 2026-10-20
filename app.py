@@ -1029,7 +1029,14 @@ async def _advance(
 async def handle_user_turn(
     state: AppState, refs: UIRefs, agent: Agent, user_input: str, agents: dict[str, Agent],
 ) -> None:
-    state.messages[0] = build_system_message(agent, user_input, state.skills)
+    # messages[0] is normally the system prompt, but a conversation can reach
+    # here with an empty/system-less list (crashed with IndexError once);
+    # never overwrite index 0 blindly - it could be a real user message.
+    system_message = build_system_message(agent, user_input, state.skills)
+    if state.messages and state.messages[0]["role"] == "system":
+        state.messages[0] = system_message
+    else:
+        state.messages.insert(0, system_message)
     state.messages.append({"role": "user", "content": user_input})
     await run.io_bound(memory.add_message, state.conversation_id, "user", user_input)
 
@@ -1074,6 +1081,10 @@ async def _on_submit(state: AppState, refs: UIRefs, agents: dict[str, Agent], re
         await task
     except asyncio.CancelledError:
         pass
+    except Exception as e:  # surface it: otherwise the turn dies silently in the log
+        import traceback
+        traceback.print_exc()
+        ui.notify(f"Error inesperado: {type(e).__name__}: {e}", type="negative", close_button=True)
     finally:
         state.current_turn_task = None
         refs.input_box.enable()

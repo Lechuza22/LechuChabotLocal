@@ -6,3 +6,4 @@ data/lechu_launcher.log
 .DS_Store
 data/reminders.db
 data/lechu_daemon.log
+data/briefing_state.json

@@ -86,7 +86,12 @@ def send_email(to: str, subject: str, body: str) -> dict:
 
 register(Tool(
     name="search_emails",
-    description="Search Gmail messages using Gmail's search syntax (e.g. 'from:someone subject:invoice').",
+    description=(
+        "Search Gmail messages using Gmail's search syntax. Examples: 'from:someone subject:invoice'; "
+        "emails received today or in the last day: 'newer_than:1d'; last week: 'newer_than:7d'; "
+        "unread: 'is:unread'; on a date: 'after:2026/10/19 before:2026/10/20'. "
+        "To list recent mail without filters use 'in:inbox'. Never invent operators like 'from:today'."
+    ),
     parameters={
         "type": "object",
         "properties": {
