@@ -2,7 +2,7 @@
 
 La interfaz de LechuPasto (NiceGUI, ventana nativa, puerto 8001). Navegación por cuadros, en una sola página con una vista activa (`nav["view"]`):
 
-- **Inicio:** cuatro cuadros: Chat, Tareas, Recordatorios y Agenda. Tocar el logo vuelve acá.
+- **Inicio:** cuatro cuadros (Chat, Tareas, Recordatorios y Agenda) y debajo **"Tu día"**: el mismo reporte HTML que se manda por Telegram (`_briefing_section`), el de hoy o el último armado, con su hora y si se envió. Botones Actualizar (arma uno nuevo, ~30 s, sin enviarlo) y Abrir en el navegador. El marco se ajusta solo al alto del reporte (mismo origen que la app) para que toda la pantalla se desplace en conjunto, y un temporizador de 60 s recarga la sección cuando aparece el resumen de las 9:00. Tocar el logo vuelve acá.
 - **Tareas:** un cuadro por tarea (horario y última corrida) y "Crear nueva tarea".
 - **Tarea:** lista de corridas a la izquierda; reporte embebido en un iframe a la derecha. Botones: Ejecutar ahora, Abrir carpeta, Abrir en el navegador, Enviar al bot.
 - **Crear nueva tarea:** nombre y descripción; se guarda como pedido en `tasks/_pedidos/*.md` (ignorado por git). Las tareas nuevas se diseñan con Claude Code a partir de esos pedidos: la app no tiene diseñador propio.

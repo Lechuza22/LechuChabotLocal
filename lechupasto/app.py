@@ -108,14 +108,92 @@ def _go(nav: dict, view: str, task_id: str | None = None) -> None:
 
 # ---------------------------------------------------------------- screens
 
+BRIEFING_TASK_ID = "morning-briefing"
+
+
+def _latest_run(task: engine.Task) -> str | None:
+    """Most recently generated run (scheduled or manual), by its timestamp."""
+    runs = engine.list_runs(task)
+    if not runs:
+        return None
+    return max(runs, key=lambda r: engine.run_meta(task, r).get("generated", ""))
+
+
+def _when_label(generated: str) -> str:
+    moment = datetime.fromisoformat(generated)
+    days = (date.today() - moment.date()).days
+    day = "hoy" if days == 0 else "ayer" if days == 1 else moment.strftime("%d/%m")
+    return f"{day} {moment.strftime('%H:%M')}"
+
+
+def _briefing_section() -> None:
+    """The day's summary (the same report sent to Telegram) under the home cards."""
+    task = engine.load_tasks().get(BRIEFING_TASK_ID)
+    if task is None:
+        return
+    seen = {"run": _latest_run(task)}
+
+    @ui.refreshable
+    def view() -> None:
+        run_id = seen["run"]
+        meta = engine.run_meta(task, run_id) if run_id else {}
+
+        async def _refresh_now() -> None:
+            ui.notify("Armando el resumen… tarda unos 30 segundos", type="info")
+            try:
+                result = await run.io_bound(engine.run_task, task)
+            except Exception as exc:  # noqa: BLE001
+                ui.notify(f"No pude armar el resumen: {type(exc).__name__}", type="negative", close_button=True)
+                return
+            seen["run"] = result.run_id
+            view.refresh()
+            ui.notify("Resumen actualizado", type="positive")
+
+        with ui.row().classes("w-full items-center gap-3"):
+            ui.label("Tu día").classes("text-lg font-bold")
+            if meta.get("generated"):
+                tag = "enviado a Telegram" if meta.get("delivered") else "armado en la app"
+                ui.label(f"Resumen de {_when_label(meta['generated'])} · {tag}").classes("text-xs text-grey-7")
+            ui.element("div").classes("grow")
+            ui.button("Actualizar", icon="refresh", on_click=_refresh_now).props("flat dense no-caps")
+            if run_id:
+                ui.button("Abrir en el navegador", icon="open_in_new",
+                          on_click=lambda: webbrowser.open(f"http://127.0.0.1:{PORT}/runs/{task.id}/runs/{run_id}.html")) \
+                    .props("flat dense no-caps")
+        if not run_id:
+            ui.label("Todavía no hay un resumen. Tocá «Actualizar» para armar el primero, o esperá al de las 9:00.") \
+                .classes("text-sm text-grey-6")
+            return
+        mtime = int((task.runs_dir / f"{run_id}.html").stat().st_mtime)
+        # Same origin as the app, so the frame can size itself to the report: the whole
+        # page scrolls instead of a scroll box inside a scroll box.
+        with ui.element("div").classes("w-full flex justify-center").style("background:#ece3d6; border-radius:12px; padding:12px 0"):
+            ui.html(
+                f'<iframe src="/runs/{task.id}/runs/{run_id}.html?v={mtime}" scrolling="no" '
+                'style="width:500px; height:900px; border:0; background:#faf4ec" '
+                "onload=\"this.style.height=(this.contentDocument.body.getBoundingClientRect().height+8)+'px'\"></iframe>",
+                sanitize=False,
+            )
+
+    def _poll() -> None:
+        latest = _latest_run(task)
+        if latest != seen["run"]:  # the 09:00 summary just landed (or one was made elsewhere)
+            seen["run"] = latest
+            view.refresh()
+
+    view()
+    ui.timer(60.0, _poll)
+
+
 def _home(nav: dict) -> None:
-    with ui.column().classes("w-full items-center gap-6").style("margin-top: 8vh"):
-        ui.label("¿Qué hacemos hoy?").classes("text-2xl font-bold")
+    with ui.column().classes("w-full items-center gap-4").style("margin-top: 2vh"):
         with ui.row().classes("gap-6 justify-center"):
             _card("chat", "Chat", "Consultas sobre tus mails, agenda y Drive", lambda: _go(nav, "chat"), big=True)
             _card("task_alt", "Tareas", "Reportes programados y su historial", lambda: _go(nav, "tasks"), big=True)
             _card("alarm", "Recordatorios", "Avisos programados y notas", lambda: _go(nav, "reminders"), big=True)
             _card("calendar_month", "Agenda", "Tu calendario y eventos con invitación", lambda: _go(nav, "agenda"), big=True)
+    ui.separator().classes("my-3")
+    _briefing_section()
 
 
 def _tasks_menu(nav: dict) -> None:
