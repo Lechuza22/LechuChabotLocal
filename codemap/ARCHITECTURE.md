@@ -19,6 +19,7 @@ graph LR
     pasto[lechupasto/app.py UI] --> engine
     engine --> steps[lechupasto/steps.py]
     steps --> briefing[core/briefing.py]
+    steps --> mailctx[core/mail_context.py]
     engine --> report[lechupasto/report.py]
     engine --> render[lechupasto/render.py Chrome headless]
     engine --> notify
@@ -33,6 +34,7 @@ Flujo de un recordatorio: el usuario pide "recordame..." en el chat, el router e
 - core
   - [core/reminders.py](core/reminders.md)
   - [core/notify.py](core/notify.md)
+  - [core/mail_context.py](core/mail_context.md)
   - tools: [reminder_tools.py](core/tools/reminder_tools.md)
 - daemon: [lechu_daemon.py](daemon/lechu_daemon.md)
 - lechupasto: [engine.py](lechupasto/engine.md), [steps / render / report](lechupasto/steps_render_report.md), [app.py](lechupasto/app.md)

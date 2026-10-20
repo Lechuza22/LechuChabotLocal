@@ -115,6 +115,8 @@ def run_task(task: Task, now: datetime | None = None, scheduled: bool = False) -
     sections = [
         {"title": s["title"].format(**variables), "kind": s["kind"], "data": ctx[s["from"]]}
         for s in rep["sections"]
+        # `hide_if_empty` sections only appear when there is something to show.
+        if not (s.get("hide_if_empty") and not ctx[s["from"]])
     ]
     title = rep["title"].format(**variables)
     html_doc = build_report_html(title, rep.get("subtitle", ""), sections,

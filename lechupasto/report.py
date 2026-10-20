@@ -28,6 +28,9 @@ ul { margin:0; padding:0; list-style:none; }
 li { padding:7px 0; border-top:1px solid var(--line); }
 li:first-child { border-top:none; }
 .time { display:inline-block; min-width:78px; font-weight:700; color:var(--brown-dark); }
+.badge { display:inline-block; background:#fff3d6; color:#8a5a00; font-size:11.5px; padding:1px 8px; border-radius:10px; margin-left:4px; white-space:nowrap; }
+.quote { margin:4px 0 0 10px; padding-left:8px; border-left:3px solid var(--line); font-size:13px; color:var(--muted); }
+a { color:var(--brown-dark); text-decoration:none; }
 .empty { color:var(--muted); font-style:italic; margin:4px 0 10px; }
 .warn { background:#fff3d6; border-left:4px solid #e8a33d; padding:8px 10px; border-radius:4px; margin:4px 0 10px; }
 footer { padding:10px 20px 16px; font-size:11.5px; color:var(--muted); }
@@ -71,6 +74,19 @@ def render_section(section: dict) -> str:
                 place = f" <span style='color:var(--muted)'>· {html.escape(event['location'])}</span>" if event.get("location") else ""
                 rows.append(f"<li><span class='time'>{when}</span>{html.escape(event.get('title') or '(sin título)')}{place}</li>")
             inner = f"<ul>{''.join(rows)}</ul>"
+    elif kind == "docs":
+        rows = []
+        for doc in section["data"] or []:
+            n = len(doc["comments"])
+            name = html.escape(doc["name"])
+            link = f"<a href='{html.escape(doc['url'])}'>{name}</a>" if doc.get("url") else name
+            quotes = "".join(
+                f"<div class='quote'><b>{html.escape(c['author'])}:</b> {html.escape(c['text'][:140])}{'…' if len(c['text']) > 140 else ''}</div>"
+                for c in doc["comments"][:3]
+            )
+            more = f"<div class='quote'>y {n - 3} más…</div>" if n > 3 else ""
+            rows.append(f"<li><strong>{link}</strong> <span class='badge'>{n} comentario{'s' if n != 1 else ''} abierto{'s' if n != 1 else ''}</span>{quotes}{more}</li>")
+        inner = f"<ul>{''.join(rows)}</ul>"
     else:  # text
         data = section["data"]
         if data is None:
