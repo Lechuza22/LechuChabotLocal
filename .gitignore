@@ -11,3 +11,4 @@ data/briefing_state.json
 # LechuPasto: generated runs (reports, screenshots, metadata)
 lechupasto/tasks/*/runs/
 data/lechupasto_launcher.log
+lechupasto/tasks/_pedidos/
