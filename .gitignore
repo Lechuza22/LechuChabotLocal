@@ -13,3 +13,17 @@ lechupasto/tasks/*/runs/
 data/lechupasto_launcher.log
 lechupasto/tasks/_pedidos/
 data/pasto_chats.db
+
+# Safety net: never commit data or credentials, whatever a new file is called
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+*.pem
+*.key
+client_secret*.json
+credentials*.json
+token*.json

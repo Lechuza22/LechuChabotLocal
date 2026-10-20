@@ -138,7 +138,7 @@ register(Tool(
     description=(
         "Find an email by what the user says about it (sender, subject, topic) and return its full text plus the "
         "Google Docs/Sheets it links to, with their open comments. Use it whenever the user asks to explain, detail "
-        "or read an email. Examples of query: 'from:marcela equivalencias' (a topic from a sender), 'in:inbox' with "
+        "or read an email. Examples of query: 'from:maria budget' (a topic from a sender), 'in:inbox' with "
         "max_results 1 (the latest email), 'subject:convivencia'. NEVER ask the user for an email id."
     ),
     parameters={
