@@ -111,7 +111,7 @@ def fetch_drive_context(service, file_id: str, kind: str | None, now: datetime) 
     return info
 
 
-def build_digest(emails: list[dict], now: datetime) -> dict | None:
+def build_digest(emails: list[dict], now: datetime, body_limit: int = MAX_BODY_CHARS) -> dict | None:
     """emails: Gmail search hits (id/subject/from/...). Returns
     {"emails": [... with full cleaned text and the titles of linked docs],
      "docs": [... each linked file once, with extract and open comments]}
@@ -135,7 +135,7 @@ def build_digest(emails: list[dict], now: datetime) -> dict | None:
         for file_id, kind in file_ids:
             doc_refs.setdefault(file_id, kind)
         enriched.append({"from": hit.get("from"), "subject": hit.get("subject"),
-                         "message": clean_body(body), "_file_ids": [f for f, _ in file_ids]})
+                         "message": clean_body(body, body_limit), "_file_ids": [f for f, _ in file_ids]})
 
     docs = [fetch_drive_context(drive, fid, kind, now) for fid, kind in list(doc_refs.items())[:MAX_DOCS]]
     names = {d["id"]: d["name"] for d in docs}

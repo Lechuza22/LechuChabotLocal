@@ -19,6 +19,8 @@ flowchart TD
 - `fetch_drive_context`: nombre, extracto (1500 caracteres) y comentarios de un archivo. Nunca lanza error: si no hay acceso devuelve el archivo marcado con `error`.
 - `build_digest`: arma `{"emails": [...], "docs": [...]}`; cada documento aparece una sola vez aunque lo citen varios mails (máx. 6).
 
+También lo usa la tool `find_email_details` (`core/tools/gmail_tools.py`), que busca por lo que dice el usuario y devuelve el texto completo (hasta 4000 caracteres) de hasta 3 mails con sus documentos, para que el chat nunca tenga que pedir un id de mail.
+
 Por qué existe: el resumen original usaba el extracto de ~200 caracteres de Gmail, así que no veía el cuerpo de los mails largos, el texto de los comentarios ni los documentos.
 
 Dependencias: `core.google_auth`, `core.tools.gmail_tools`, `core.tools.drive_tools`, API de Drive v3 (comentarios).

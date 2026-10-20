@@ -71,6 +71,25 @@ def read_email(message_id: str) -> dict:
     }
 
 
+def find_email_details(query: str, max_results: int = 1) -> dict:
+    """Search + read in one step, so nobody has to know a message id: the full
+    text of the best matches plus the Google files they link to (with their
+    open comments)."""
+    from datetime import datetime
+
+    from core import mail_context
+
+    found = search_emails(query, max(1, min(int(max_results), 3)))
+    if "error" in found:
+        return found
+    if not found["results"]:
+        return {"error": "No encontré mails con esa búsqueda. Probá con otras palabras (remitente, asunto o tema)."}
+    digest = mail_context.build_digest(found["results"], datetime.now().astimezone(), body_limit=4000)
+    if digest is None:
+        return _NOT_CONNECTED
+    return digest
+
+
 def send_email(to: str, subject: str, body: str) -> dict:
     credentials = get_credentials()
     if credentials is None:
@@ -112,6 +131,25 @@ register(Tool(
         "required": ["message_id"],
     },
     func=read_email,
+))
+
+register(Tool(
+    name="find_email_details",
+    description=(
+        "Find an email by what the user says about it (sender, subject, topic) and return its full text plus the "
+        "Google Docs/Sheets it links to, with their open comments. Use it whenever the user asks to explain, detail "
+        "or read an email. Examples of query: 'from:marcela equivalencias' (a topic from a sender), 'in:inbox' with "
+        "max_results 1 (the latest email), 'subject:convivencia'. NEVER ask the user for an email id."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Gmail search query built from what the user described"},
+            "max_results": {"type": "integer", "description": "How many matching emails to read (1-3), default 1"},
+        },
+        "required": ["query"],
+    },
+    func=find_email_details,
 ))
 
 register(Tool(

@@ -82,27 +82,30 @@ def _emoji(code: int | None) -> str:
 
 
 def get_weather(location: str) -> dict:
-    with httpx.Client(timeout=10.0) as client:
-        geo_resp = client.get(
-            GEOCODING_URL, params={"name": location, "count": 1, "language": "es", "format": "json"}
-        )
-        geo_resp.raise_for_status()
-        results = geo_resp.json().get("results") or []
-        if not results:
-            return {"error": f"No se pudo encontrar la ubicación '{location}'."}
-        place = results[0]
-        lat, lon = place["latitude"], place["longitude"]
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            geo_resp = client.get(
+                GEOCODING_URL, params={"name": location, "count": 1, "language": "es", "format": "json"}
+            )
+            geo_resp.raise_for_status()
+            results = geo_resp.json().get("results") or []
+            if not results:
+                return {"error": f"No se pudo encontrar la ubicación '{location}'."}
+            place = results[0]
+            lat, lon = place["latitude"], place["longitude"]
 
-        forecast_resp = client.get(FORECAST_URL, params={
-            "latitude": lat,
-            "longitude": lon,
-            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
-            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-            "timezone": "auto",
-            "forecast_days": 3,
-        })
-        forecast_resp.raise_for_status()
-        forecast_data = forecast_resp.json()
+            forecast_resp = client.get(FORECAST_URL, params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "timezone": "auto",
+                "forecast_days": 3,
+            })
+            forecast_resp.raise_for_status()
+            forecast_data = forecast_resp.json()
+    except httpx.HTTPError as e:
+        return {"error": f"No se pudo consultar el clima (¿sin conexión a internet?): {e}"}
 
     current = forecast_data.get("current", {})
     daily = forecast_data.get("daily", {})
