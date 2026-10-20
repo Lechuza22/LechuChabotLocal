@@ -9,6 +9,7 @@ Run:  python3 lechupasto/app.py   (LECHUPASTO_DEV=1 serves in a browser instead 
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import subprocess
@@ -31,6 +32,7 @@ from core import reminders as reminder_store  # noqa: E402
 from lechupasto import chats, engine  # noqa: E402
 
 PORT = 8001
+CONFIG_MODEL = "qwen3:8b"
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE / "assets"
 REQUESTS_DIR = engine.TASKS_DIR / "_pedidos"
@@ -233,6 +235,22 @@ def _ignoring_deleted(fn, *args) -> None:
         pass
 
 
+async def _summarize_title(user_text: str, answer: str) -> str | None:
+    """Short title for a conversation from its first exchange, via the local
+    model (no thinking, tiny output). None on any failure: the tab keeps the
+    truncated first message as its title."""
+    prompt = ("Escribí un título de 2 a 5 palabras, en español, que resuma de qué trata esta conversación. "
+              "Respondé solo con el título: sin comillas, sin punto final, sin explicaciones.\n\n"
+              f"Usuario: {user_text[:500]}\nAsistente: {answer[:500]}")
+    try:
+        reply = await _ollama().chat(CONFIG_MODEL, [{"role": "user", "content": prompt}], think=False)
+    except (httpx.HTTPError, KeyError, ValueError):
+        return None
+    lines = (reply.get("content") or "").strip().splitlines()
+    title = re.sub(r"^[\"'«“\s]+|[\"'»”.\s]+$", "", lines[0]) if lines else ""
+    return title[:48] or None
+
+
 def _chat_messages(chat: dict, chat_id: int) -> list[dict]:
     """In-memory message list of a conversation (system slot first), loaded
     from the database the first time it's needed."""
@@ -285,10 +303,50 @@ def _chat_screen(nav: dict, chat: dict) -> None:
         chat["msgs"].pop(chat_id, None)
         nav["refresh"]()
 
+    tab_labels: dict[int, ui.label] = {}
+
+    def _rename(chat_id: int) -> None:
+        current = next((c["title"] for c in chats.open_chats() if c["id"] == chat_id), "")
+        with ui.dialog() as dialog, ui.card().style("width: 460px; max-width: 92vw"):
+            ui.label("Título del chat").classes("text-lg font-bold")
+            field = ui.input(value=current).props("outlined dense autofocus").classes("w-full")
+
+            def _save() -> None:
+                title = chats.rename_chat(chat_id, field.value or "")
+                _ignoring_deleted(tab_labels[chat_id].set_text, title)
+                dialog.close()
+
+            async def _summarize() -> None:
+                msgs = _chat_messages(chat, chat_id)
+                first_user = next((m["content"] for m in msgs if m["role"] == "user"), "")
+                first_answer = next((m["content"] for m in msgs if m["role"] == "assistant" and m.get("content")), "")
+                if not first_user:
+                    ui.notify("Todavía no hay nada que resumir", type="warning")
+                    return
+                suggested = await _summarize_title(first_user, first_answer)
+                if suggested:
+                    field.value = suggested
+                else:
+                    ui.notify("No pude generar un resumen", type="warning")
+
+            field.on("keydown.enter", _save)
+            with ui.row().classes("w-full justify-between items-center"):
+                ui.button("Resumir con IA", icon="auto_awesome", on_click=_summarize).props("flat no-caps dense")
+                with ui.row().classes("gap-2"):
+                    ui.button("Cancelar", on_click=dialog.close).props("flat no-caps")
+                    ui.button("Guardar", on_click=_save).props("unelevated no-caps color=primary")
+        dialog.open()
+
+    def _tab_clicked(chat_id: int) -> None:
+        # Pressing the title of the tab you're already on renames it.
+        if chat_id == active:
+            _rename(chat_id)
+        else:
+            _switch(chat_id)
+
     with ui.row().classes("w-full items-center gap-2"):
         _back_button(nav, "home", "Inicio")
         ui.element("div").classes("grow")
-    tab_labels: dict[int, ui.label] = {}
     with ui.row().classes("w-full items-center gap-1 no-wrap").style("overflow-x: auto"):
         for tab in open_tabs:
             is_active = tab["id"] == active
@@ -296,7 +354,7 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                 "border-radius: 8px 8px 0 0; padding: 0 2px 0 10px; "
                 + ("background:#fff; border-bottom: 3px solid #a5693a" if is_active else "background:#f1e8da")
             ):
-                tab_labels[tab["id"]] = ui.label(tab["title"]).classes("text-sm cursor-pointer whitespace-nowrap")                     .style("max-width: 190px; overflow: hidden; text-overflow: ellipsis")                     .on("click", lambda _e, c=tab["id"]: _switch(c))
+                tab_labels[tab["id"]] = ui.label(tab["title"]).classes("text-sm cursor-pointer whitespace-nowrap")                     .style("max-width: 190px; overflow: hidden; text-overflow: ellipsis")                     .on("click", lambda _e, c=tab["id"]: _tab_clicked(c)).tooltip("Tocá el título del chat activo para renombrarlo" if is_active else "")
                 ui.button(icon="close", on_click=lambda c=tab["id"]: _close(c)).props("flat round dense size=xs")
         ui.button(icon="add", on_click=_new).props("flat round dense").tooltip("Nuevo chat")
         archived = chats.archived_chats()
@@ -375,7 +433,15 @@ def _chat_screen(nav: dict, chat: dict) -> None:
                 await run.io_bound(chats.append_messages, active, messages[turn_start:])
                 chat["busy"] = False
                 _ignoring_deleted(send_btn.enable)
-                _ignoring_deleted(scroll.scroll_to, 1.0)
+                if turn_start == 1 and answer:
+                    asyncio.create_task(_auto_title(text, answer))
+                _ignoring_deleted(lambda: scroll.scroll_to(percent=1.0))
+
+        async def _auto_title(first_user: str, first_answer: str) -> None:
+            suggested = await _summarize_title(first_user, first_answer)
+            stored = chats.set_auto_title(active, suggested) if suggested else None
+            if stored:
+                _ignoring_deleted(tab_labels[active].set_text, stored)
 
         with ui.row().classes("w-full no-wrap items-center gap-2"):
             box = ui.input(placeholder="Escribí tu consulta…").props("outlined dense").classes("grow").on("keydown.enter", _send)
@@ -411,6 +477,15 @@ def _note_dialog(note: dict | None, on_done) -> None:
             ui.button("Cancelar", on_click=dialog.close).props("flat no-caps")
             ui.button("Guardar", icon="save", on_click=_save).props("unelevated no-caps color=primary")
     dialog.open()
+
+
+_DAYS_FULL = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+_MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def _today_text() -> str:
+    today = datetime.now()
+    return f"{_DAYS_FULL[today.weekday()]} {today.day} de {_MONTHS[today.month - 1]} de {today.year}"
 
 
 _WEEKDAYS_ES = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
@@ -532,9 +607,13 @@ def index() -> None:
     nav: dict = {"view": "home", "task": None}
     chat: dict = {"msgs": {}, "active": None, "busy": False}
 
-    with ui.row().classes("w-full items-center gap-3 cursor-pointer").on("click", lambda: _go(nav, "home")):
-        ui.image(MARK).classes("w-10 h-10")
-        ui.label("LechuPasto").classes("text-xl font-bold")
+    with ui.row().classes("w-full items-center no-wrap"):
+        with ui.row().classes("items-center gap-3 cursor-pointer").on("click", lambda: _go(nav, "home")):
+            ui.image(MARK).classes("w-10 h-10")
+            ui.label("LechuPasto").classes("text-xl font-bold")
+        ui.element("div").classes("grow")
+        date_label = ui.label(_today_text()).classes("text-sm text-grey-7")
+    ui.timer(60.0, lambda: date_label.set_text(_today_text()))  # flips at midnight
 
     @ui.refreshable
     def screen() -> None:

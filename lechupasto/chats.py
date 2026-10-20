@@ -37,6 +37,9 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(CHATS_DB)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    if "title_manual" not in {row["name"] for row in conn.execute("PRAGMA table_info(conversations)")}:
+        conn.execute("ALTER TABLE conversations ADD COLUMN title_manual INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
     return conn
 
 
@@ -92,6 +95,25 @@ def set_title_from(chat_id: int, text: str) -> str:
     with closing(_connect()) as conn, conn:
         conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, chat_id))
     return title
+
+
+def rename_chat(chat_id: int, title: str) -> str:
+    """User-chosen title: from then on the automatic summary never replaces it."""
+    title = " ".join(title.split())[:60].strip() or "Nuevo chat"
+    with closing(_connect()) as conn, conn:
+        conn.execute("UPDATE conversations SET title = ?, title_manual = 1 WHERE id = ?", (title, chat_id))
+    return title
+
+
+def set_auto_title(chat_id: int, title: str) -> str | None:
+    """Apply a generated title unless the user already named the chat. Returns
+    the stored title, or None when it was left alone."""
+    title = " ".join(title.split())[:60].strip()
+    if not title:
+        return None
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute("UPDATE conversations SET title = ? WHERE id = ? AND title_manual = 0", (title, chat_id))
+        return title if cur.rowcount else None
 
 
 def close_chat(chat_id: int) -> None:
