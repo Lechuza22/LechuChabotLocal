@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from email.utils import parseaddr, parsedate_to_datetime
 from typing import Callable
 
 import httpx
@@ -27,6 +28,37 @@ def calendar_events(now: datetime, params: dict, ctx: dict):
 
 def emails(now: datetime, params: dict, ctx: dict):
     return briefing.fetch_emails(now)  # list | None
+
+
+UNREAD_LOOKBACK_DAYS = 7
+UNREAD_FETCH = 30
+
+
+def _sender_name(header: str | None) -> str:
+    name, address = parseaddr(header or "")
+    return name or address or "?"
+
+
+def unread_older(now: datetime, params: dict, ctx: dict):
+    """Still-unread inbox mail from the week before the summarized window.
+    Listed by code (sender, subject, date): no model, and nothing is marked as read."""
+    from core.tools.gmail_tools import search_emails
+
+    window_start, _ = briefing._email_window(now)
+    since = window_start - timedelta(days=UNREAD_LOOKBACK_DAYS)
+    query = (f"in:inbox is:unread after:{int(since.timestamp())} before:{int(window_start.timestamp())} "
+             "-category:promotions -category:social")
+    result = briefing._google_call(search_emails, query, UNREAD_FETCH)
+    if result is None or "error" in result:
+        return None
+    items = []
+    for hit in result["results"]:
+        try:
+            date = parsedate_to_datetime(hit["date"]).astimezone().strftime("%d/%m")
+        except (TypeError, ValueError):
+            date = ""
+        items.append({"from": _sender_name(hit.get("from")), "subject": hit.get("subject") or "(sin asunto)", "date": date})
+    return items
 
 
 def email_digest(now: datetime, params: dict, ctx: dict):
@@ -113,6 +145,7 @@ def llm_summarize_digest(now: datetime, params: dict, ctx: dict):
 STEP_CATALOG: dict[str, Callable] = {
     "calendar_events": calendar_events,
     "emails": emails,
+    "unread_older": unread_older,
     "email_digest": email_digest,
     "commented_docs": commented_docs,
     "llm_summarize_digest": llm_summarize_digest,

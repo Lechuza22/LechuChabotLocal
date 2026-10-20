@@ -8,6 +8,7 @@ schedule:
 steps:
   - {id: events, type: calendar_events}
   - {id: emails, type: emails}
+  - {id: unread_older, type: unread_older}
   - {id: email_digest, type: email_digest, input: emails}
   - {id: commented_docs, type: commented_docs, input: email_digest}
   - {id: email_summary, type: llm_summarize_digest, input: email_digest}
@@ -17,6 +18,7 @@ report:
   sections:
     - {title: "Agenda de hoy", kind: events, from: events}
     - {title: "Mails de {since} ({emails_count})", kind: text, from: email_summary}
+    - {title: "Sin leer de días anteriores ({unread_older_count})", kind: mails, from: unread_older, hide_if_empty: true}
     - {title: "Documentos con comentarios abiertos", kind: docs, from: commented_docs, hide_if_empty: true}
 deliver:
   telegram: image

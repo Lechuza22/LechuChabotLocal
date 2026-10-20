@@ -11,6 +11,8 @@ from lechupasto.render import HEIGHT_PROBE
 
 MARK_SVG = (Path(__file__).parent / "assets" / "lechupasto_mark.svg").read_text(encoding="utf-8")
 
+MAILS_SHOWN = 12
+
 _CSS = """
 :root { --brown:#a5693a; --brown-dark:#774c2a; --cream:#faf4ec; --ink:#34363c; --muted:#7a7068; --line:#eadfce; }
 * { box-sizing:border-box; }
@@ -74,6 +76,16 @@ def render_section(section: dict) -> str:
                 place = f" <span style='color:var(--muted)'>· {html.escape(event['location'])}</span>" if event.get("location") else ""
                 rows.append(f"<li><span class='time'>{when}</span>{html.escape(event.get('title') or '(sin título)')}{place}</li>")
             inner = f"<ul>{''.join(rows)}</ul>"
+    elif kind == "mails":
+        items = section["data"] or []
+        shown = items[:MAILS_SHOWN]
+        rows = "".join(
+            f"<li><span class='time'>{html.escape(m['date'])}</span><strong>{html.escape(m['from'])}</strong>"
+            f"<div class='quote' style='border:none;margin:0 0 0 78px;padding:0'>{html.escape(m['subject'][:90])}</div></li>"
+            for m in shown
+        )
+        extra = f"<p class='empty'>y {len(items) - MAILS_SHOWN} más sin leer…</p>" if len(items) > MAILS_SHOWN else ""
+        inner = f"<ul>{rows}</ul>{extra}"
     elif kind == "docs":
         rows = []
         for doc in section["data"] or []:
