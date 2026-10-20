@@ -51,9 +51,18 @@ DATA_DIR = Path(os.environ["LECHU_DATA_DIR"]) if os.environ.get("LECHU_DATA_DIR"
 DB_PATH = DATA_DIR / "memory.db"
 
 
+def _with_tilde(path: Path) -> str:
+    """Store folders under the home directory as ~/... so config.yaml never
+    carries the user name (it is committed to a public repository)."""
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
 def _persist_whitelist() -> None:
     raw = yaml.safe_load(CONFIG_PATH.read_text())
-    raw["filesystem"]["whitelisted_folders"] = [str(p) for p in CONFIG.filesystem.whitelisted_folders]
+    raw["filesystem"]["whitelisted_folders"] = [_with_tilde(p) for p in CONFIG.filesystem.whitelisted_folders]
     CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
 
 

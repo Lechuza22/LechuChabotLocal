@@ -37,7 +37,7 @@ python3 app.py
 ## Configuración (`config.yaml`)
 
 - `filesystem.whitelisted_folders`: carpetas a las que el chatbot puede leer
-  y escribir. Por defecto: `/Users/lechu/ChatbotSandbox`. Agregá más rutas
+  y escribir. Por defecto: `~/ChatbotSandbox`. Agregá más rutas
   absolutas a la lista para habilitarlas.
 - `max_tool_iterations`: tope de llamadas a herramientas por turno antes de
   cortar (evita loops infinitos).

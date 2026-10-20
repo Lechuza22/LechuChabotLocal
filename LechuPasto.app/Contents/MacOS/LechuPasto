@@ -1,7 +1,18 @@
 #!/bin/bash
 set -uo pipefail
 
-PROJECT_DIR="/Users/lechu/Projects/Chatbot"
+# Project folder: where this .app lives (<project>/X.app); LECHU_PROJECT_DIR overrides it,
+# and ~/.lechu_project_dir covers a copy of the app moved elsewhere (e.g. /Applications).
+HERE="$(cd "$(dirname "$0")/../../.." && pwd)"
+if [ -n "${LECHU_PROJECT_DIR:-}" ]; then
+    PROJECT_DIR="$LECHU_PROJECT_DIR"
+elif [ -x "$HERE/.venv/bin/python3" ]; then
+    PROJECT_DIR="$HERE"
+elif [ -f "$HOME/.lechu_project_dir" ]; then
+    PROJECT_DIR="$(cat "$HOME/.lechu_project_dir")"
+else
+    PROJECT_DIR="$HERE"
+fi
 VENV="$PROJECT_DIR/.venv"
 LOG="$PROJECT_DIR/data/lechupasto_launcher.log"
 

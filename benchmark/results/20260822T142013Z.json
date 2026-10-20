@@ -70,7 +70,7 @@
     {
       "name": "search_download_file",
       "agent_id": "search",
-      "prompt": "Descargá el archivo de https://example.com/reporte.pdf a /Users/lechu/ChatbotSandbox/reporte.pdf",
+      "prompt": "Descargá el archivo de https://example.com/reporte.pdf a ~/ChatbotSandbox/reporte.pdf",
       "expected_tool": "download_file",
       "outcomes": [
         "download_file",
