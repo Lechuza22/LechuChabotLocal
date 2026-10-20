@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import os
+
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -43,7 +45,9 @@ def _load_config(path: Path = CONFIG_PATH) -> Config:
 CONFIG = _load_config()
 AGENTS_DIR = PROJECT_ROOT / "agents"
 SKILLS_DIR = PROJECT_ROOT / "skills"
-DATA_DIR = PROJECT_ROOT / "data"
+# LECHU_DATA_DIR lets tests/dev servers use a throwaway data folder so they can
+# never touch the real notes, reminders and chats.
+DATA_DIR = Path(os.environ["LECHU_DATA_DIR"]) if os.environ.get("LECHU_DATA_DIR") else PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "memory.db"
 
 
