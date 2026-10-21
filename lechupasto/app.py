@@ -90,11 +90,11 @@ def _run_label(task: engine.Task, run_id: str) -> str:
 # ---------------------------------------------------------------- cards
 
 def _card(icon: str, title: str, subtitle: str, on_click, dashed: bool = False, big: bool = False) -> None:
-    size = "width: 238px; height: 180px" if big else "width: 270px; height: 160px"
+    size = "width: 238px; height: 128px" if big else "width: 270px; height: 160px"
     border = "border: 2px dashed #c9b79c; background: transparent" if dashed else "background: #fff"
     with ui.card().classes("cursor-pointer items-center justify-center text-center gap-1 hover:shadow-lg transition-shadow") \
             .style(f"{size}; {border}; border-radius: 16px").on("click", on_click):
-        ui.icon(icon, size="44px" if big else "36px", color="primary")
+        ui.icon(icon, size="32px" if big else "36px", color="primary")
         ui.label(title).classes("text-lg font-bold")
         ui.label(subtitle).classes("text-xs text-grey-7").style("white-space: pre-line")
 
@@ -159,9 +159,9 @@ def _briefing_section() -> None:
             ui.element("div").classes("grow")
             ui.button("Actualizar", icon="refresh", on_click=_refresh_now).props("flat dense no-caps")
             if run_id:
-                ui.button("Abrir en el navegador", icon="open_in_new",
+                ui.button("Abrir", icon="open_in_new",
                           on_click=lambda: webbrowser.open(f"http://127.0.0.1:{PORT}/runs/{task.id}/runs/{run_id}.html")) \
-                    .props("flat dense no-caps")
+                    .props("flat dense no-caps").tooltip("Abrir el resumen en el navegador")
         if not run_id:
             ui.label("Todavía no hay un resumen. Tocá «Actualizar» para armar el primero, o esperá al de las 9:00.") \
                 .classes("text-sm text-grey-6")
@@ -195,7 +195,16 @@ def _home(nav: dict) -> None:
             _card("alarm", "Recordatorios", "Avisos programados y notas", lambda: _go(nav, "reminders"), big=True)
             _card("calendar_month", "Agenda", "Tu calendario y eventos con invitación", lambda: _go(nav, "agenda"), big=True)
     ui.separator().classes("my-3")
-    _briefing_section()
+    # Left half: the day's report. Right half: the priority matrix, which stays in view
+    # (sticky) while the long report scrolls. Wraps to one column in a narrow window.
+    with ui.row().classes("w-full items-start gap-6").style("flex-wrap: wrap"):
+        with ui.column().classes("gap-0").style("flex: 1 1 520px; min-width: 0"):
+            _briefing_section()
+        with ui.column().classes("gap-2").style("flex: 1 1 440px; min-width: 340px; position: sticky; top: 12px; align-self: flex-start"):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("grid_view", size="22px", color="primary")
+                ui.label("Matriz de prioridades").classes("text-lg font-bold")
+            _matrix_board(compact=True)
 
 
 def _tasks_menu(nav: dict) -> None:
@@ -678,22 +687,25 @@ def _when_text(due_at: str) -> str:
     return f"{_WEEKDAYS_ES[due.weekday()]} {due.strftime('%d/%m %H:%M')}"
 
 
-# Quadrant look: (header color, body color)
+# Quadrant look: (accent, soft background, icon)
 _MATRIX_STYLE = {
-    "urgent": ("#c0392b", "#fdeceb"),
-    "not_urgent": ("#2e7d32", "#eaf5ea"),
-    "postpone": ("#3f6fb5", "#e9eff9"),
-    "late": ("#c26a14", "#fdf0df"),
+    "urgent": ("#c0392b", "#fdeceb", "local_fire_department"),
+    "not_urgent": ("#2e7d32", "#e9f5ea", "eco"),
+    "postpone": ("#3f6fb5", "#e8eefa", "schedule"),
+    "late": ("#c26a14", "#fdf0df", "hourglass_bottom"),
 }
 _MATRIX_ORDER = ["urgent", "not_urgent", "postpone", "late"]
+_INBOX_ACCENT = "#a5693a"
 
 
-def _matrix_board() -> None:
+def _matrix_board(compact: bool = False) -> None:
     """Priority matrix: type an item, it lands in "Sin clasificar", drag it into
-    a quadrant (or between quadrants, or reorder). Every drop is saved."""
+    a quadrant (or between quadrants, or reorder). Every drop is saved.
+    `compact` = the smaller version shown on the home screen."""
     item_ids: dict[str, int] = {}      # element id -> database id
     containers: dict[str, ui.column] = {}
     counts: dict[str, ui.label] = {}
+    text_cls = "text-xs" if compact else "text-sm"
 
     def _persist(_event=None) -> None:
         """Save the whole board as it looks on screen (all five containers)."""
@@ -731,15 +743,19 @@ def _matrix_board() -> None:
         board.refresh()
         ui.notify("Listo ✔", type="positive", timeout=1200)
 
-    def _item_card(item: dict) -> None:
-        card = ui.card().props("flat bordered").classes("w-full").style("padding: 4px 8px; background:#fff; border-radius:8px")
+    def _item_card(item: dict, accent: str, chip: bool = False) -> None:
+        card = ui.card().props("flat").style(
+            f"padding: 3px 6px 3px 4px; background:#fff; border-radius:10px; border-left: 4px solid {accent}; "
+            "box-shadow: 0 1px 4px rgba(60,40,20,.10)" + ("" if not chip else "; width: auto; max-width: 100%"))
+        if not chip:
+            card.classes("w-full")
         item_ids[card.id] = item["id"]
         with card:
             with ui.row().classes("w-full items-center no-wrap gap-1"):
-                ui.icon("drag_indicator", size="18px").classes("drag-handle cursor-move text-grey-6")
-                ui.label(item["text"]).classes("grow cursor-pointer text-sm").style("word-break: break-word") \
+                ui.icon("drag_indicator", size="16px").classes("drag-handle cursor-move text-grey-5")
+                ui.label(item["text"]).classes(f"grow cursor-pointer {text_cls}").style("word-break: break-word; line-height: 1.25") \
                     .on("click", lambda _e, i=item: _edit(i))
-                ui.button(icon="check", on_click=lambda i=item: _done(i)).props("flat round dense size=sm color=positive").tooltip("Hecho")
+                ui.button(icon="check", on_click=lambda i=item: _done(i)).props("flat round dense size=xs color=positive").tooltip("Hecho")
 
     @ui.refreshable
     def board() -> None:
@@ -747,8 +763,8 @@ def _matrix_board() -> None:
         containers.clear()
         grouped = matrix_store.list_open()
 
-        def _lane(key: str, min_height: int) -> None:
-            lane = ui.column().classes("w-full gap-1").style(f"min-height: {min_height}px")
+        def _lane(key: str, min_height: int, accent: str, row: bool = False) -> None:
+            lane = (ui.row().classes("w-full gap-1") if row else ui.column().classes("w-full gap-1.5")).style(f"min-height: {min_height}px")
             # forceFallback: drag with mouse events instead of the browser's native
             # drag-and-drop, which is flaky inside embedded macOS web views.
             lane.make_sortable(group="matrix", handle=".drag-handle", on_end=_persist, animation=0.15,
@@ -756,28 +772,40 @@ def _matrix_board() -> None:
             containers[key] = lane
             with lane:
                 for item in grouped.get(key, []):
-                    _item_card(item)
+                    _item_card(item, accent, chip=row)
+
+        def _badge(key: str, color: str) -> None:
+            counts[key] = ui.label(str(len(grouped[key]))).classes("text-xs font-bold").style(
+                f"background:{color}; color:#fff; border-radius:10px; min-width:20px; text-align:center; padding:0 7px")
 
         # inbox tray
-        with ui.card().props("flat bordered").classes("w-full").style("background:#fbf8f3; border-radius:12px; border:2px dashed #c9b79c"):
+        with ui.column().classes("w-full gap-1").style(
+                "background:#fbf7f0; border-radius:14px; border:2px dashed #d3c2a8; padding:8px 10px"):
             with ui.row().classes("items-center gap-2"):
-                ui.label("Sin clasificar").classes("font-bold text-sm")
-                counts["inbox"] = ui.label(str(len(grouped["inbox"]))).classes("text-xs text-grey-7")
-                ui.label("— los ítems nuevos caen acá; arrastralos a un cuadrante").classes("text-xs text-grey-6")
-            _lane("inbox", 48)
+                ui.icon("inbox", size="18px").style(f"color:{_INBOX_ACCENT}")
+                ui.label("Sin clasificar").classes("font-bold text-sm").style("color:#774c2a")
+                _badge("inbox", _INBOX_ACCENT)
+                ui.label("arrastralos a un cuadrante").classes("text-xs text-grey-6")
+            _lane("inbox", 36 if compact else 44, _INBOX_ACCENT, row=compact)
 
-        with ui.grid(columns=2).classes("w-full gap-3"):
+        with ui.grid(columns=2).classes("w-full").style(f"gap: {10 if compact else 14}px"):
             for key in _MATRIX_ORDER:
-                header, body = _MATRIX_STYLE[key]
-                with ui.card().props("flat").classes("w-full").style(
-                        f"background:{body}; border-radius:12px; border-top: 5px solid {header}; padding: 8px 10px"):
-                    with ui.row().classes("items-center gap-2"):
-                        ui.label(matrix_store.QUADRANTS[key]).classes("font-bold").style(f"color:{header}")
-                        counts[key] = ui.label(str(len(grouped[key]))).classes("text-xs text-grey-7")
-                    _lane(key, 130)
+                accent, soft, icon = _MATRIX_STYLE[key]
+                with ui.column().classes("w-full gap-1").style(
+                        f"background: linear-gradient(155deg, {soft} 0%, #ffffff 170%); border-radius: 18px; "
+                        f"padding: {8 if compact else 12}px {10 if compact else 14}px; border: 1px solid {soft}; "
+                        "box-shadow: 0 3px 12px rgba(60,40,20,.07)"):
+                    with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                        ui.icon(icon, size="16px" if compact else "18px").style(
+                            f"background:{accent}; color:#fff; border-radius:50%; padding:{4 if compact else 5}px")
+                        ui.label(matrix_store.QUADRANTS[key]).classes("font-bold" + (" text-sm" if compact else "")).style(f"color:{accent}")
+                        ui.element("div").classes("grow")
+                        _badge(key, accent)
+                    _lane(key, 96 if compact else 130, accent)
 
-    with ui.row().classes("w-full items-center no-wrap gap-2").style("background:#fff; border-radius:12px; padding:10px"):
-        field = ui.input(placeholder="Nuevo ítem… (Enter para agregar)").props("outlined dense").classes("grow")
+    with ui.row().classes("w-full items-center no-wrap gap-2").style(
+            "background:#fff; border-radius:14px; padding:" + ("6px 8px" if compact else "10px") + "; box-shadow: 0 1px 6px rgba(60,40,20,.08)"):
+        field = ui.input(placeholder="Nuevo ítem… (Enter para agregar)").props("borderless dense").classes("grow")
 
         def _add() -> None:
             text = (field.value or "").strip()
@@ -788,7 +816,7 @@ def _matrix_board() -> None:
             board.refresh()
 
         field.on("keydown.enter", _add)
-        ui.button("Agregar", icon="add", on_click=_add).props("unelevated no-caps color=primary")
+        ui.button(icon="add", on_click=_add).props("round dense unelevated color=primary").tooltip("Agregar")
     ui.space().classes("h-2")
     board()
 
