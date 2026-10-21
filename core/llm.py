@@ -24,8 +24,11 @@ class OllamaClient:
 
     async def chat_stream(
         self, model: str, messages: list[dict], tools: list[dict] | None = None, think: bool | None = None,
+        options: dict | None = None,
     ) -> AsyncIterator[dict]:
         payload = {"model": model, "messages": messages, "stream": True}
+        if options:
+            payload["options"] = options
         if tools:
             payload["tools"] = tools
         if think is not None:

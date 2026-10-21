@@ -38,7 +38,9 @@ def _attachments(payload: dict) -> list[dict]:
     found = []
     for part in payload.get("parts", []) or []:
         if part.get("filename"):
-            found.append({"name": part["filename"], "type": part.get("mimeType", "")})
+            body = part.get("body", {})
+            found.append({"name": part["filename"], "type": part.get("mimeType", ""),
+                          "id": body.get("attachmentId"), "size": body.get("size", 0)})
         found.extend(_attachments(part))
     return found
 
@@ -83,7 +85,7 @@ def read_email(message_id: str) -> dict:
     }
 
 
-def find_email_details(query: str, max_results: int = 1) -> dict:
+def find_email_details(query: str, max_results: int = 1, has_attachment: bool = False) -> dict:
     """Search + read in one step, so nobody has to know a message id: the full
     text of the best matches plus the Google files they link to (with their
     open comments)."""
@@ -96,14 +98,25 @@ def find_email_details(query: str, max_results: int = 1) -> dict:
     if by_id:
         found = {"results": [{"id": by_id.group(1)}]}
     else:
-        found = search_emails(query, max(1, min(int(max_results), 3)))
+        limit = max(1, min(int(max_results), 3))
+        suffix = " has:attachment" if has_attachment else ""
+        found = search_emails(query + suffix, limit)
+        if not found.get("results") and "error" not in found:
+            # The model often guesses a sender ("from:docentes") that doesn't exist: retry
+            # without the sender/recipient/folder operators and keep the subject and topic.
+            relaxed = re.sub(r"\b(?:from|to|cc|bcc|label|in|is):\S+\s*", "", query).strip()
+            if relaxed and relaxed != query:
+                found = search_emails(relaxed + suffix, limit)
     if "error" in found:
         return found
     if not found["results"]:
         return {"error": "No encontré mails con esa búsqueda. Probá con otras palabras (remitente, asunto o tema)."}
-    digest = mail_context.build_digest(found["results"], datetime.now().astimezone(), body_limit=4000)
+    digest = mail_context.build_digest(found["results"], datetime.now().astimezone(), body_limit=3000, read_pdfs=True)
     if digest is None:
         return _NOT_CONNECTED
+    if not has_attachment and not any(e["attachments"] for e in digest["emails"]):
+        digest["hint"] = ("This email has no attachments. If the user is asking about an attachment, PDF or file, "
+                          "call find_email_details again with the same query and has_attachment=true.")
     return digest
 
 
@@ -154,7 +167,7 @@ register(Tool(
     name="find_email_details",
     description=(
         "Find an email by what the user says about it (sender, subject, topic) and return its full text plus the "
-        "Google Docs/Sheets it links to, with their open comments. Use it whenever the user asks to explain, detail "
+        "Google Docs/Sheets it links to, with their open comments, and the text of PDF attachments. Use it whenever the user asks to explain, detail "
         "or read an email. Examples of query: 'from:maria budget' (a topic from a sender), 'in:inbox' with "
         "max_results 1 (the latest email), 'subject:convivencia'. If the email contains pictures the result says how many ('images'): you cannot read pictures, say so plainly. NEVER ask the user for an email id."
     ),
@@ -163,6 +176,7 @@ register(Tool(
         "properties": {
             "query": {"type": "string", "description": "Gmail search query built from what the user described"},
             "max_results": {"type": "integer", "description": "How many matching emails to read (1-3), default 1"},
+            "has_attachment": {"type": "boolean", "description": "Set true when the user asks about attachments, PDFs or files sent with an email: only emails that have attachments are considered"},
         },
         "required": ["query"],
     },

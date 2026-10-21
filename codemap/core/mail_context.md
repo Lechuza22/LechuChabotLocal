@@ -23,6 +23,10 @@ También lo usa la tool `find_email_details` (`core/tools/gmail_tools.py`), que 
 
 Cada mail del resumen incluye `images` (marcadores `[image: …]` más adjuntos de tipo imagen) y `attachments` (nombres de archivos adjuntos): el modelo de solo texto no puede leer imágenes ni adjuntos, pero así puede decir con precisión qué hay. `find_email_details` también acepta `id:<id>` para abrir un mail ya encontrado.
 
+**PDF adjuntos:** con `read_pdfs=True` (lo usa `find_email_details`), `build_digest` descarga los PDF del mail (hasta 3 por mail, 10 MB, 15 páginas) y extrae su texto con pypdf (`read_pdf_attachment`), con un presupuesto de ~6000 caracteres entre todos para no desbordar el contexto del modelo. Si un PDF es una imagen escaneada, está dañado o es muy grande, devuelve una `note` en lugar de texto; nunca rompe el resto del mail.
+
+`find_email_details` además: acepta `has_attachment` (agrega `has:attachment` a la búsqueda; el chat lo activa cuando preguntás por adjuntos), reintenta sin `from:`/`to:`/`in:` si el modelo inventó un remitente y no hubo resultados, y agrega una `hint` cuando el mail leído no tiene adjuntos para que el modelo repita con el filtro.
+
 Por qué existe: el resumen original usaba el extracto de ~200 caracteres de Gmail, así que no veía el cuerpo de los mails largos, el texto de los comentarios ni los documentos.
 
 Dependencias: `core.google_auth`, `core.tools.gmail_tools`, `core.tools.drive_tools`, API de Drive v3 (comentarios).

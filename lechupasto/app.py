@@ -49,8 +49,10 @@ class _FastClient(OllamaClient):
     ~40s. Thinking showed no routing gain in this project's benchmark, so the
     chat turns it off."""
 
-    def chat_stream(self, model, messages, tools=None, think=None):
-        return super().chat_stream(model, messages, tools, think=False)
+    # 8192-token context: PDF and email text in tool results would overflow Ollama's
+    # default 4096, which silently drops the start of the conversation (system prompt first).
+    def chat_stream(self, model, messages, tools=None, think=None, options=None):
+        return super().chat_stream(model, messages, tools, think=False, options={"num_ctx": 8192})
 
 
 _client: OllamaClient | None = None

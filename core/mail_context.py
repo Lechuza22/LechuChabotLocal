@@ -8,11 +8,14 @@ documents themselves."""
 
 from __future__ import annotations
 
+import base64
+import io
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 
 from googleapiclient.discovery import build
+from pypdf import PdfReader
 
 from core.google_auth import get_credentials
 
@@ -23,6 +26,10 @@ MAX_DOC_CHARS = 1500
 MAX_DOCS = 6
 COMMENT_WINDOW_DAYS = 14
 MAX_COMMENTS_PER_DOC = 8
+MAX_PDFS_PER_MAIL = 3
+MAX_PDF_PAGES = 15
+MAX_PDF_BYTES = 10_000_000
+PDF_CHARS_EACH = 3000
 MAX_COMMENT_CHARS = 300
 
 _FILE_URL = re.compile(
@@ -111,7 +118,39 @@ def fetch_drive_context(service, file_id: str, kind: str | None, now: datetime) 
     return info
 
 
-def build_digest(emails: list[dict], now: datetime, body_limit: int = MAX_BODY_CHARS) -> dict | None:
+def _is_pdf(attachment: dict) -> bool:
+    return attachment["type"] == "application/pdf" or attachment["name"].lower().endswith(".pdf")
+
+
+def read_pdf_attachment(gmail, message_id: str, attachment: dict, char_limit: int) -> dict:
+    """Text of a PDF attached to a mail. Never raises: `note` explains what
+    couldn't be done (too big, scanned image with no text layer, damaged)."""
+    info: dict = {"name": attachment["name"]}
+    if not attachment.get("id"):
+        return info | {"note": "no se pudo descargar el adjunto"}
+    if attachment.get("size", 0) > MAX_PDF_BYTES:
+        return info | {"note": f"PDF demasiado grande ({attachment['size'] // 1_000_000} MB) para leerlo"}
+    try:
+        data = gmail.users().messages().attachments().get(
+            userId="me", messageId=message_id, id=attachment["id"]).execute()["data"]
+        reader = PdfReader(io.BytesIO(base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))))
+        pages = reader.pages[:MAX_PDF_PAGES]
+        text = "\n".join((page.extract_text() or "") for page in pages)
+    except Exception as exc:  # noqa: BLE001 - damaged/encrypted/unavailable: report, don't break the mail
+        logger.warning("pdf %s unreadable: %s", attachment["name"][:30], type(exc).__name__)
+        return info | {"note": "no pude leer este PDF (dañado o protegido)"}
+    text = re.sub(r"[ \t]+", " ", re.sub(r"\n{3,}", "\n\n", text)).strip()
+    if not text:
+        return info | {"note": "el PDF no tiene texto legible (probablemente es una imagen escaneada)"}
+    info["pages"] = len(reader.pages)
+    info["text"] = text[:char_limit] + ("…" if len(text) > char_limit else "")
+    if len(reader.pages) > MAX_PDF_PAGES:
+        info["note"] = f"se leyeron las primeras {MAX_PDF_PAGES} de {len(reader.pages)} páginas"
+    return info
+
+
+def build_digest(emails: list[dict], now: datetime, body_limit: int = MAX_BODY_CHARS,
+                 read_pdfs: bool = False, pdf_budget: int = 6000) -> dict | None:
     """emails: Gmail search hits (id/subject/from/...). Returns
     {"emails": [... with full cleaned text and the titles of linked docs],
      "docs": [... each linked file once, with extract and open comments]}
@@ -122,6 +161,7 @@ def build_digest(emails: list[dict], now: datetime, body_limit: int = MAX_BODY_C
     if credentials is None:
         return None
     drive = build("drive", "v3", credentials=credentials)
+    gmail = build("gmail", "v1", credentials=credentials) if read_pdfs else None
 
     enriched, doc_refs = [], {}
     for hit in emails:
@@ -138,9 +178,18 @@ def build_digest(emails: list[dict], now: datetime, body_limit: int = MAX_BODY_C
         file_ids = extract_file_ids(body)
         for file_id, kind in file_ids:
             doc_refs.setdefault(file_id, kind)
+        pdfs = []
+        if read_pdfs:
+            for attachment in [a for a in attachments if _is_pdf(a)][:MAX_PDFS_PER_MAIL]:
+                if pdf_budget <= 0:
+                    pdfs.append({"name": attachment["name"], "note": "no se leyó para no exceder el límite de texto"})
+                    continue
+                pdf = read_pdf_attachment(gmail, hit["id"], attachment, min(PDF_CHARS_EACH, pdf_budget))
+                pdf_budget -= len(pdf.get("text", ""))
+                pdfs.append(pdf)
         enriched.append({"from": hit.get("from") or full.get("from"), "subject": hit.get("subject") or full.get("subject"),
                          "message": clean_body(body, body_limit), "images": images,
-                         "attachments": [a["name"] for a in attachments][:6],
+                         "attachments": [a["name"] for a in attachments][:6], "pdfs": pdfs,
                          "_file_ids": [f for f, _ in file_ids]})
 
     docs = [fetch_drive_context(drive, fid, kind, now) for fid, kind in list(doc_refs.items())[:MAX_DOCS]]
