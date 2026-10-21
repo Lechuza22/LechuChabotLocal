@@ -125,17 +125,23 @@ def build_digest(emails: list[dict], now: datetime, body_limit: int = MAX_BODY_C
 
     enriched, doc_refs = [], {}
     for hit in emails:
+        full: dict = {}
         try:
             full = read_email(hit["id"])
             body = full.get("body", "")
         except Exception as exc:  # noqa: BLE001 - fall back to the snippet for this mail
             logger.warning("read_email failed (%s), using snippet", type(exc).__name__)
             body = hit.get("snippet") or ""
+        attachments = full.get("attachments", [])
+        # Pictures (inline markers + attached images): the text-only model can't read them.
+        images = len(re.findall(r"\[image:[^\]]*\]", body)) + sum(1 for a in attachments if a["type"].startswith("image/"))
         file_ids = extract_file_ids(body)
         for file_id, kind in file_ids:
             doc_refs.setdefault(file_id, kind)
-        enriched.append({"from": hit.get("from"), "subject": hit.get("subject"),
-                         "message": clean_body(body, body_limit), "_file_ids": [f for f, _ in file_ids]})
+        enriched.append({"from": hit.get("from") or full.get("from"), "subject": hit.get("subject") or full.get("subject"),
+                         "message": clean_body(body, body_limit), "images": images,
+                         "attachments": [a["name"] for a in attachments][:6],
+                         "_file_ids": [f for f, _ in file_ids]})
 
     docs = [fetch_drive_context(drive, fid, kind, now) for fid, kind in list(doc_refs.items())[:MAX_DOCS]]
     names = {d["id"]: d["name"] for d in docs}

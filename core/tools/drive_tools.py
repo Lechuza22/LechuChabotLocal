@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -13,11 +14,40 @@ _NOT_CONNECTED = {
     "error": "Drive no está conectado. Pedile al usuario que lo conecte en Configuración → Conexiones → Google."
 }
 
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 _EXPORT_MIME_MAP = {
     "application/vnd.google-apps.document": "text/plain",
-    "application/vnd.google-apps.spreadsheet": "text/csv",
+    # xlsx rather than csv: the csv export only carries the FIRST tab
+    "application/vnd.google-apps.spreadsheet": _XLSX_MIME,
     "application/vnd.google-apps.presentation": "text/plain",
 }
+
+# What a tool result may carry back to a small local model without flooding its context.
+MAX_READ_CHARS = 12000
+
+
+def extract_file_id(value: str) -> str:
+    """Accepts a bare id or any Google Docs/Sheets/Slides/Drive link."""
+    value = value.strip()
+    match = re.search(r"/d/([\w-]{20,})", value) or re.search(r"[?&]id=([\w-]{20,})", value)
+    return match.group(1) if match else value
+
+
+def _spreadsheet_to_text(raw_bytes: bytes) -> str:
+    """Every tab as plain rows ('a | b | c'), each under a '## Hoja: name' heading."""
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(io.BytesIO(raw_bytes), data_only=True, read_only=True)
+    parts = []
+    for sheet in workbook.worksheets:
+        rows = []
+        for row in sheet.iter_rows(values_only=True):
+            cells = ["" if cell is None else str(cell).replace("\n", " ") for cell in row]
+            if any(cells):
+                rows.append(" | ".join(cells).rstrip(" |"))
+        parts.append(f"## Hoja: {sheet.title}\n" + "\n".join(rows))
+    return "\n\n".join(parts)
 
 
 def search_drive_files(query: str) -> dict:
@@ -35,6 +65,7 @@ def search_drive_files(query: str) -> dict:
 
 
 def read_drive_file(file_id: str) -> dict:
+    file_id = extract_file_id(file_id)
     credentials = get_credentials()
     if credentials is None:
         return _NOT_CONNECTED
@@ -45,7 +76,10 @@ def read_drive_file(file_id: str) -> dict:
     export_mime = _EXPORT_MIME_MAP.get(mime_type)
     if export_mime:
         raw = service.files().export(fileId=file_id, mimeType=export_mime).execute()
-        content = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        if export_mime == _XLSX_MIME:
+            content = _spreadsheet_to_text(raw)
+        else:
+            content = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
     else:
         buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(buffer, service.files().get_media(fileId=file_id))
@@ -59,7 +93,11 @@ def read_drive_file(file_id: str) -> dict:
         else:
             content = raw_bytes.decode("utf-8", errors="replace")
 
-    return {"id": file_id, "name": meta["name"], "mime_type": mime_type, "content": content}
+    result = {"id": file_id, "name": meta["name"], "mime_type": mime_type, "content": content}
+    if len(content) > MAX_READ_CHARS:
+        result["content"] = content[:MAX_READ_CHARS]
+        result["truncated"] = f"el archivo tiene {len(content)} caracteres; se muestran los primeros {MAX_READ_CHARS}"
+    return result
 
 
 def write_drive_file(name: str, content: str, file_id: str | None = None, folder_id: str | None = None) -> dict:
@@ -94,12 +132,13 @@ register(Tool(
 register(Tool(
     name="read_drive_file",
     description=(
-        "Read the text content of a Drive file by id. Google Docs/Sheets/Slides are exported as text/CSV; "
-        "PDFs are text-extracted; other files are read as plain text."
+        "Read the text content of a Google Doc, Sheet (every tab), Slides, PDF or text file. Pass the file id OR the "
+        "full link the user pasted (docs.google.com/... or drive.google.com/...): never say you can't open links, "
+        "call this tool with it. Long files come back cut to the first part (a 'truncated' note says so)."
     ),
     parameters={
         "type": "object",
-        "properties": {"file_id": {"type": "string", "description": "Drive file id (from search_drive_files results)"}},
+        "properties": {"file_id": {"type": "string", "description": "Drive file id (from search_drive_files) or a full Google Docs/Sheets/Drive URL"}},
         "required": ["file_id"],
     },
     func=read_drive_file,

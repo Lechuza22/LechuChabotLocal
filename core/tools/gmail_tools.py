@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from email.mime.text import MIMEText
 
 from googleapiclient.discovery import build
@@ -30,6 +31,16 @@ def _extract_body(payload: dict) -> str:
     if payload.get("body", {}).get("data"):
         return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
     return ""
+
+
+def _attachments(payload: dict) -> list[dict]:
+    """Named parts of the message (attached or inline files), at any depth."""
+    found = []
+    for part in payload.get("parts", []) or []:
+        if part.get("filename"):
+            found.append({"name": part["filename"], "type": part.get("mimeType", "")})
+        found.extend(_attachments(part))
+    return found
 
 
 def search_emails(query: str, max_results: int = 10) -> dict:
@@ -68,6 +79,7 @@ def read_email(message_id: str) -> dict:
         "to": _get_header(headers, "To"),
         "date": _get_header(headers, "Date"),
         "body": _extract_body(detail.get("payload", {})),
+        "attachments": _attachments(detail.get("payload", {})),
     }
 
 
@@ -79,7 +91,12 @@ def find_email_details(query: str, max_results: int = 1) -> dict:
 
     from core import mail_context
 
-    found = search_emails(query, max(1, min(int(max_results), 3)))
+    # The model sometimes asks for "id:<hex>" after seeing ids in search results.
+    by_id = re.fullmatch(r"(?:id:)?([0-9a-f]{12,})", query.strip())
+    if by_id:
+        found = {"results": [{"id": by_id.group(1)}]}
+    else:
+        found = search_emails(query, max(1, min(int(max_results), 3)))
     if "error" in found:
         return found
     if not found["results"]:
@@ -139,7 +156,7 @@ register(Tool(
         "Find an email by what the user says about it (sender, subject, topic) and return its full text plus the "
         "Google Docs/Sheets it links to, with their open comments. Use it whenever the user asks to explain, detail "
         "or read an email. Examples of query: 'from:maria budget' (a topic from a sender), 'in:inbox' with "
-        "max_results 1 (the latest email), 'subject:convivencia'. NEVER ask the user for an email id."
+        "max_results 1 (the latest email), 'subject:convivencia'. If the email contains pictures the result says how many ('images'): you cannot read pictures, say so plainly. NEVER ask the user for an email id."
     ),
     parameters={
         "type": "object",
