@@ -201,10 +201,13 @@ def _home(nav: dict) -> None:
         with ui.column().classes("gap-0").style("flex: 1 1 520px; min-width: 0"):
             _briefing_section()
         with ui.column().classes("gap-2").style("flex: 1 1 440px; min-width: 340px; position: sticky; top: 12px; align-self: flex-start"):
-            with ui.row().classes("items-center gap-2"):
+            with ui.row().classes("w-full items-center gap-2 no-wrap"):
                 ui.icon("grid_view", size="22px", color="primary")
                 ui.label("Matriz de prioridades").classes("text-lg font-bold")
-            _matrix_board(compact=True)
+                ui.element("div").classes("grow")
+                ui.button("Editar", icon="edit", on_click=lambda: (nav.update(reminders_tab="matrix"), _go(nav, "reminders"))) \
+                    .props("flat dense no-caps").tooltip("Abrir la matriz para moverla o editarla")
+            _matrix_board(compact=True, readonly=True)
 
 
 def _tasks_menu(nav: dict) -> None:
@@ -698,10 +701,12 @@ _MATRIX_ORDER = ["urgent", "not_urgent", "postpone", "late"]
 _INBOX_ACCENT = "#a5693a"
 
 
-def _matrix_board(compact: bool = False) -> None:
+def _matrix_board(compact: bool = False, readonly: bool = False) -> None:
     """Priority matrix: type an item, it lands in "Sin clasificar", drag it into
     a quadrant (or between quadrants, or reorder). Every drop is saved.
-    `compact` = the smaller version shown on the home screen."""
+    `compact` = the smaller version shown on the home screen.
+    `readonly` = just a picture of the board (home): no adding, dragging or editing,
+    refreshed on its own when something changes elsewhere."""
     item_ids: dict[str, int] = {}      # element id -> database id
     containers: dict[str, ui.column] = {}
     counts: dict[str, ui.label] = {}
@@ -745,12 +750,15 @@ def _matrix_board(compact: bool = False) -> None:
 
     def _item_card(item: dict, accent: str, chip: bool = False) -> None:
         card = ui.card().props("flat").style(
-            f"padding: 3px 6px 3px 4px; background:#fff; border-radius:10px; border-left: 4px solid {accent}; "
-            "box-shadow: 0 1px 4px rgba(60,40,20,.10)" + ("" if not chip else "; width: auto; max-width: 100%"))
+            f"padding: {'4px 10px' if readonly else '3px 6px 3px 4px'}; background:#fff; border-radius:10px; "
+            f"border-left: 4px solid {accent}; box-shadow: 0 1px 4px rgba(60,40,20,.10)" + ("; width: auto; max-width: 100%" if chip else ""))
         if not chip:
             card.classes("w-full")
-        item_ids[card.id] = item["id"]
         with card:
+            if readonly:
+                ui.label(item["text"]).classes(text_cls).style("word-break: break-word; line-height: 1.25")
+                return
+            item_ids[card.id] = item["id"]
             with ui.row().classes("w-full items-center no-wrap gap-1"):
                 ui.icon("drag_indicator", size="16px").classes("drag-handle cursor-move text-grey-5")
                 ui.label(item["text"]).classes(f"grow cursor-pointer {text_cls}").style("word-break: break-word; line-height: 1.25") \
@@ -765,10 +773,11 @@ def _matrix_board(compact: bool = False) -> None:
 
         def _lane(key: str, min_height: int, accent: str, row: bool = False) -> None:
             lane = (ui.row().classes("w-full gap-1") if row else ui.column().classes("w-full gap-1.5")).style(f"min-height: {min_height}px")
-            # forceFallback: drag with mouse events instead of the browser's native
-            # drag-and-drop, which is flaky inside embedded macOS web views.
-            lane.make_sortable(group="matrix", handle=".drag-handle", on_end=_persist, animation=0.15,
-                               options={"forceFallback": True, "fallbackTolerance": 3})
+            if not readonly:
+                # forceFallback: drag with mouse events instead of the browser's native
+                # drag-and-drop, which is flaky inside embedded macOS web views.
+                lane.make_sortable(group="matrix", handle=".drag-handle", on_end=_persist, animation=0.15,
+                                   options={"forceFallback": True, "fallbackTolerance": 3})
             containers[key] = lane
             with lane:
                 for item in grouped.get(key, []):
@@ -778,15 +787,17 @@ def _matrix_board(compact: bool = False) -> None:
             counts[key] = ui.label(str(len(grouped[key]))).classes("text-xs font-bold").style(
                 f"background:{color}; color:#fff; border-radius:10px; min-width:20px; text-align:center; padding:0 7px")
 
-        # inbox tray
-        with ui.column().classes("w-full gap-1").style(
-                "background:#fbf7f0; border-radius:14px; border:2px dashed #d3c2a8; padding:8px 10px"):
-            with ui.row().classes("items-center gap-2"):
-                ui.icon("inbox", size="18px").style(f"color:{_INBOX_ACCENT}")
-                ui.label("Sin clasificar").classes("font-bold text-sm").style("color:#774c2a")
-                _badge("inbox", _INBOX_ACCENT)
-                ui.label("arrastralos a un cuadrante").classes("text-xs text-grey-6")
-            _lane("inbox", 36 if compact else 44, _INBOX_ACCENT, row=compact)
+        # inbox tray (in the read-only picture only when there is something unsorted)
+        if not readonly or grouped["inbox"]:
+            with ui.column().classes("w-full gap-1").style(
+                    "background:#fbf7f0; border-radius:14px; border:2px dashed #d3c2a8; padding:8px 10px"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("inbox", size="18px").style(f"color:{_INBOX_ACCENT}")
+                    ui.label("Sin clasificar").classes("font-bold text-sm").style("color:#774c2a")
+                    _badge("inbox", _INBOX_ACCENT)
+                    if not readonly:
+                        ui.label("arrastralos a un cuadrante").classes("text-xs text-grey-6")
+                _lane("inbox", 36 if compact else 44, _INBOX_ACCENT, row=compact)
 
         with ui.grid(columns=2).classes("w-full").style(f"gap: {10 if compact else 14}px"):
             for key in _MATRIX_ORDER:
@@ -803,22 +814,37 @@ def _matrix_board(compact: bool = False) -> None:
                         _badge(key, accent)
                     _lane(key, 96 if compact else 130, accent)
 
-    with ui.row().classes("w-full items-center no-wrap gap-2").style(
-            "background:#fff; border-radius:14px; padding:" + ("6px 8px" if compact else "10px") + "; box-shadow: 0 1px 6px rgba(60,40,20,.08)"):
-        field = ui.input(placeholder="Nuevo ítem… (Enter para agregar)").props("borderless dense").classes("grow")
+    if not readonly:
+        with ui.row().classes("w-full items-center no-wrap gap-2").style(
+                "background:#fff; border-radius:14px; padding:" + ("6px 8px" if compact else "10px") + "; box-shadow: 0 1px 6px rgba(60,40,20,.08)"):
+            field = ui.input(placeholder="Nuevo ítem… (Enter para agregar)").props("borderless dense").classes("grow")
 
-        def _add() -> None:
-            text = (field.value or "").strip()
-            if not text:
-                return
-            matrix_store.add_item(text)
-            field.value = ""
-            board.refresh()
+            def _add() -> None:
+                text = (field.value or "").strip()
+                if not text:
+                    return
+                matrix_store.add_item(text)
+                field.value = ""
+                board.refresh()
 
-        field.on("keydown.enter", _add)
-        ui.button(icon="add", on_click=_add).props("round dense unelevated color=primary").tooltip("Agregar")
-    ui.space().classes("h-2")
+            field.on("keydown.enter", _add)
+            ui.button(icon="add", on_click=_add).props("round dense unelevated color=primary").tooltip("Agregar")
+        ui.space().classes("h-2")
     board()
+
+    if readonly:
+        def _snapshot() -> tuple:
+            return tuple((k, tuple((i["id"], i["text"]) for i in v)) for k, v in matrix_store.list_open().items())
+
+        seen = {"snap": _snapshot()}
+
+        def _watch() -> None:  # reflect edits made in Recordatorios > Matriz or elsewhere
+            current = _snapshot()
+            if current != seen["snap"]:
+                seen["snap"] = current
+                board.refresh()
+
+        ui.timer(5.0, _watch)
 
 
 def _reminders_screen(nav: dict) -> None:
@@ -827,11 +853,14 @@ def _reminders_screen(nav: dict) -> None:
     ui.label("Lo que cargues acá lo ve el chat, y lo que el chat cree aparece acá. Los recordatorios avisan por notificación "
              "y Telegram aunque la app esté cerrada.").classes("text-sm text-grey-7")
 
+    open_matrix = nav.pop("reminders_tab", None) == "matrix"  # arrived from the home "Editar" button
+    matrix_holder = None
+
     def _tab_changed(event) -> None:
         # The matrix must be built while its tab is on screen: SortableJS looks up
         # its containers once, when mounted, and a hidden tab panel has no DOM yet.
         # Rebuilt on every visit too, since leaving the tab destroys that DOM.
-        if event.value in ("Matriz", tab_matrix):
+        if matrix_holder is not None and event.value in ("Matriz", tab_matrix):
             matrix_holder.clear()
             with matrix_holder:
                 _matrix_board()
@@ -880,7 +909,7 @@ def _reminders_screen(nav: dict) -> None:
         reminder_list.refresh()
         notes_list.refresh()
 
-    with ui.tab_panels(tabs, value=tab_rem).classes("w-full bg-transparent"):
+    with ui.tab_panels(tabs, value=tab_matrix if open_matrix else tab_rem).classes("w-full bg-transparent"):
         with ui.tab_panel(tab_rem).classes("p-0 pt-3"):
             with ui.row().classes("w-full items-end gap-3").style("background:#fff; border-radius:12px; padding:12px"):
                 message = ui.input("Recordame…", placeholder="Ej: llamar al contador").props("outlined dense").classes("grow").style("min-width: 240px")
@@ -926,6 +955,9 @@ def _reminders_screen(nav: dict) -> None:
             notes_list()
         with ui.tab_panel(tab_matrix).classes("p-0 pt-3"):
             matrix_holder = ui.column().classes("w-full gap-0")
+            if open_matrix:  # its tab is already the active one: no tab change will build it
+                with matrix_holder:
+                    _matrix_board()
 
     # The chat (or Lechu) can add/remove items while this screen is open.
     seen = {"sig": reminder_store.signature()}
